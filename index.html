@@ -1,0 +1,990 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>우산 꽉 잡아!</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#7FC8C2;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+canvas{display:block;width:100vw;height:100vh;cursor:pointer}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(() => {
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const FONT = '"Avenir Next","Helvetica Neue","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif';
+const VH = 720, GROUND = 74, HIGH_Y = 250, D2R = Math.PI / 180;
+const DARK = '#2D2A32', RED = '#E5484D', CREAM = '#FFF3DE';
+let W, H = VH, S, DPR;
+
+// ---------- tuning ----------
+const G = 1100;          // gravity
+const JUMP = 420;        // upward kick per tap
+const DRIFT = 280;       // forward tilt acceleration (deg/s^2) — speeds up the longer you wait
+const KICK_ROT = 100;    // backward spin per tap (deg/s)
+const MAX_FWD = 260;     // max forward spin (deg/s)
+const MAX_FALL = 300;    // terminal fall speed (umbrella drag)
+const RAIN_V = 950;
+
+// ---------- helpers ----------
+const rnd = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const ease = t => t < .5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+const hash = n => { n = Math.sin(n * 127.1 + 311.7) * 43758.5453; return n - Math.floor(n); };
+const hex = h => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+const col = (c, f = 1, a = 1) => `rgba(${clamp(c[0] * f, 0, 255) | 0},${clamp(c[1] * f, 0, 255) | 0},${clamp(c[2] * f, 0, 255) | 0},${a})`;
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+const rot = (x, y, a) => { const c = Math.cos(a * D2R), s = Math.sin(a * D2R); return [x * c - y * s, x * s + y * c]; };
+
+const PALS = ['#7FC8C2', '#F2A6A0', '#F4CF6E', '#A9B8E8', '#9ED39A', '#E9A3C9', '#F3B37A'].map(hex);
+let palA = PALS[0], palB = PALS[0], palT = 1, palIdx = 0;
+const bg = () => mix(palA, palB, ease(clamp(palT, 0, 1)));
+
+// ---------- state ----------
+let state = 'title', st = 0, gt = 0, scroll = 0;
+let P, px, dist, score, time, speed, move, meter, phi, phiFrom, phiTo, phiT, phiDur;
+let nextChange, pendingPhi, pendingGust, warnLen, reason, shake = 0, flash = 0, matched = true, high = false;
+let roofs, storms, nextRoof, nextStorm, weather = 'rain', snowCover = 0, snowCap = 0, leavers = [], banner;
+let crew = [], inv = 0, dmg = 0;
+let combo = 0, comboMult = 1, focus = 0, lost = [], slowmo = 0, popups = [], beatT = 0;
+const METEOR_PALS = ['#F2A07B', '#C98BB9', '#E8957A', '#B79AD8', '#E9B26F'].map(hex);
+const WEATHER = {
+  rain:   { name: '비', thing: '빗줄기', subj: '빗줄기가', from: '비 오는', forecast: '하루 종일 비', start: '오늘은 하루 종일 비가 와요' },
+  snow:   { name: '눈', thing: '눈송이', subj: '눈송이가', from: '눈 오는', forecast: '하루 종일 눈', start: '오늘은 하루 종일 눈이 와요' },
+  meteor: { name: '유성우', thing: '유성', subj: '유성이', from: '유성 오는', forecast: '하루 종일 유성우 (외출 자제)', start: '오늘은 하루 종일 유성우가 쏟아져요!' },
+};
+const perf = () => Math.min(dmg, 4);
+
+// game-over "wisdom", signed by whoever fell last
+const QUOTES = {
+  rain: [
+    '인생은 폭풍이 지나가길 기다리는 게 아니라, 우산 각도를 맞추는 것이다.',
+    '비 온 뒤에 땅이 굳는다. 나는 그 굳은 땅에 떨어졌다.',
+    '우산은 펴는 것보다 지키는 것이 어렵다.',
+    '빗줄기는 방향을 바꾼다. 나만 그대로였다.',
+    '오늘의 강수확률 100%. 나의 생존확률 0%.',
+    '모든 먹구름 뒤엔 햇살이 있다. 그 전에 번개가 있다.',
+    '비가 오면 우산을 써라. 그리고 제발 꽉 잡아라.',
+  ],
+  snow: [
+    '눈은 녹는다. 내 멘탈도 녹았다.',
+    '첫눈 오는 날 만나자 했는데, 첫눈에 떨어졌다.',
+    '눈송이는 모두 다르다. 나를 떨어뜨린 방식도 매번 다르다.',
+    '소복이 쌓이는 건 눈만이 아니었다. 실수도 쌓였다.',
+    '눈사람은 녹아도 웃는다. 나는 못 웃는다.',
+    '겨울이 오면 봄도 멀지 않으리. 우산은 이미 멀리 갔으리.',
+  ],
+  meteor: [
+    '별똥별에 소원을 빌었다. "제발 나한테만 떨어지지 마."',
+    '우리는 모두 별의 먼지다. 방금 진짜 먼지가 될 뻔했다.',
+    '하늘이 무너져도 솟아날 구멍은 있다. 우산에 구멍이 났다.',
+    '유성우는 1년에 한 번. 내 실수는 3초에 한 번.',
+    '꿈은 크게, 우산은 튼튼하게.',
+    '소원은 빌었는데 우산 각도는 안 빌었다.',
+  ],
+  flip: ['뒤집힌 우산은 그릇이 된다. 빗물 담기엔 딱 좋다.', '바람은 언제나 반대편에서 분다. 특히 내가 방심할 때.'],
+  ground: ['중력은 언제나 이긴다. 오늘도 이겼다.', '높이 오르려면 먼저 떨어져 봐야 한다. 많이 떨어져 봤다.'],
+  roof: ['높이 나는 새가 멀리 본다. 낮게 나는 우산은 옥상을 본다.', '모든 길은 옥상으로 통한다. 적어도 오늘은.'],
+  lightning: ['번개는 같은 곳에 두 번 치지 않는다. 한 번이면 충분했다.', '찌릿한 사랑을 원했지, 찌릿한 번개를 원한 건 아니었다.'],
+};
+// each animal says it in its own accent
+const ACCENT = { cat: '냥', dog: '멍', duck: '꽥', frog: '개굴', penguin: '뀨' };
+function accent(text, id) {
+  if (id === 'sloth') return '어… ' + text.replace(/, /g, '… ').replace(/([가-힣%])[.!?]/g, '$1…');
+  const a = ACCENT[id];
+  return a ? text.replace(/([가-힣])([.!?])/g, `$1${a}$2`) : text;
+}
+let quote = null, lastFallen = null;
+function pickQuote(why) {
+  const pool = Math.random() < 0.35 && QUOTES[why] ? QUOTES[why] : QUOTES[weather];
+  const who = lastFallen ? lastFallen.name : '우산';
+  const raw = pool[Math.floor(Math.random() * pool.length)];
+  quote = { text: lastFallen ? accent(raw, lastFallen.id) : raw, by: `— ${who}` };
+}
+function wrapLines(text, maxW) {
+  const words = text.split(' '), lines = []; let cur = '';
+  for (const w of words) { const t = cur ? cur + ' ' + w : w; if (ctx.measureText(t).width > maxW && cur) { lines.push(cur); cur = w; } else cur = t; }
+  if (cur) lines.push(cur);
+  return lines;
+} // how badly the umbrella is broken
+
+// ---------- sound (WebAudio synth, no files) ----------
+let actx = null, muted = false, noiseBuf = null;
+try { muted = localStorage.getItem('umbrella_muted') === '1'; } catch (e) {}
+function audio() {
+  try {
+    if (!actx) {
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      noiseBuf = actx.createBuffer(1, actx.sampleRate, actx.sampleRate);
+      const d = noiseBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    if (actx.state === 'suspended') actx.resume();
+  } catch (e) { actx = null; }
+}
+function tone(f, d, type = 'sine', vol = 0.12, slide = 1, delay = 0) {
+  if (!actx || muted) return;
+  const t = actx.currentTime + delay, o = actx.createOscillator(), g = actx.createGain();
+  o.type = type; o.frequency.setValueAtTime(f, t);
+  if (slide !== 1) o.frequency.exponentialRampToValueAtTime(Math.max(30, f * slide), t + d);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0008, t + d);
+  o.connect(g); g.connect(actx.destination); o.start(t); o.stop(t + d + 0.03);
+}
+function noise(d, vol = 0.2, freq = 800, delay = 0) {
+  if (!actx || muted) return;
+  const t = actx.currentTime + delay, src = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+  src.buffer = noiseBuf; f.type = 'lowpass'; f.frequency.value = freq;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0008, t + d);
+  src.connect(f); f.connect(g); g.connect(actx.destination); src.start(t); src.stop(t + d + 0.03);
+}
+const CRY = {
+  cat: () => { tone(880, 0.28, 'triangle', 0.12, 0.55); },
+  dog: () => { tone(420, 0.09, 'square', 0.08, 0.7); tone(420, 0.09, 'square', 0.08, 0.7, 0.13); },
+  duck: () => { tone(520, 0.13, 'sawtooth', 0.07, 0.8); tone(520, 0.13, 'sawtooth', 0.07, 0.8, 0.16); },
+  frog: () => { tone(200, 0.09, 'square', 0.08, 1.5); tone(240, 0.09, 'square', 0.08, 1.5, 0.12); },
+  penguin: () => { tone(1100, 0.14, 'sine', 0.12, 1.4); },
+  sloth: () => { tone(330, 0.6, 'sine', 0.1, 0.6); },
+};
+function sfx(name, arg) {
+  if (!actx || muted) return;
+  if (name === 'tap') tone(480 + perf() * -40, 0.07, 'sine', 0.06, 1.7);
+  else if (name === 'perfect') { const k = Math.pow(2, Math.min(arg, 10) / 12); [660, 880, 1320].forEach((f, i) => tone(f * k, 0.18, 'triangle', 0.09, 1, i * 0.06)); }
+  else if (name === 'hit') { tone(140, 0.3, 'square', 0.1, 0.4); noise(0.25, 0.25, 700); }
+  else if (name === 'rescue') [523, 659, 784, 1046].forEach((f, i) => tone(f, 0.16, 'triangle', 0.1, 1, i * 0.07));
+  else if (name === 'thunder') { noise(0.7, 0.35, 380); tone(70, 0.5, 'sawtooth', 0.06, 0.5); }
+  else if (name === 'beat') { tone(62, 0.12, 'sine', 0.32, 0.7); tone(58, 0.12, 'sine', 0.26, 0.7, 0.17); }
+  else if (name === 'break') noise(0.12, 0.08, 2500);
+  else if (name === 'die') { [440, 370, 311, 262].forEach((f, i) => tone(f, 0.22, 'triangle', 0.09, 1, i * 0.13)); }
+  else if (name === 'cry' && CRY[arg]) CRY[arg]();
+}
+function popup(text, x, y, color = '#FFFFFF', size = 26) { popups.push({ text, x, y, t: 1, color, size }); }
+const fishRain = () => false;
+const CREW_N = 3, LINK = 41, CREW_SC = 0.8;
+// hanging companions: name, sound on falling
+const HANGERS = [
+  { id: 'cat', name: '고양이', sound: '냥!' },
+  { id: 'dog', name: '강아지', sound: '멍!' },
+  { id: 'duck', name: '오리', sound: '꽥!' },
+  { id: 'frog', name: '개구리', sound: '개굴!' },
+  { id: 'penguin', name: '펭귄', sound: '뀨!' },
+  { id: 'sloth', name: '나무늘보', sound: '어…?' },
+];
+const SNOW_PALS = ['#BFD7EA', '#C9C3E6', '#A9C6D9', '#D6E2E9', '#B8CFE0'].map(hex);
+const pals = () => weather === 'snow' ? SNOW_PALS : weather === 'meteor' ? METEOR_PALS : PALS;
+let best = 0, isNew = false;
+try { best = +localStorage.getItem('umbrella_best_v3') || 0; } catch (e) {}
+let drops = [], parts = [];
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = innerWidth * DPR; cv.height = innerHeight * DPR;
+  S = cv.height / VH; W = cv.width / S;
+  const n = Math.round(W / 4.5);
+  while (drops.length < n) drops.push(newDrop(true));
+  drops.length = n;
+}
+function newDrop(any) {
+  return { leak: undefined, x: rnd(-250, W + 250), y: any ? rnd(-40, H) : rnd(-80, -10), l: rnd(14, 26), v: rnd(0.85, 1.15), f: Math.random() < 0.28, fc: Math.random() < 0.5 };
+}
+
+function reset(keepWeather) {
+  P = { y: H * 0.42, vy: 0, ang: 0, av: 0, flip: 1, spin: 0, landed: false };
+  const pool = HANGERS.slice().sort(() => Math.random() - 0.5);
+  crew = pool.slice(0, CREW_N).map((h, i) => ({ h, a: 0, av: 0 }));
+  inv = 0; dmg = 0; quote = null; lastFallen = null; combo = 0; comboMult = 1; focus = 0; lost = []; popups = []; slowmo = 0;
+  dist = 0; score = 0; time = 0; speed = 220; move = 0; meter = 0;
+  phi = 0; phiFrom = 0; phiTo = 0; phiT = 1; phiDur = 0.7;
+  nextChange = 3.8; pendingPhi = null; pendingGust = false; warnLen = 1.3;
+  roofs = []; storms = []; nextRoof = 600; nextStorm = 900; leavers = []; banner = null;
+  // weather is decided once per run: all rain or all snow
+  if (!keepWeather) {
+    const w = Math.random(); weather = w < 1 / 3 ? 'snow' : w < 2 / 3 ? 'meteor' : 'rain';
+    palA = bg(); palIdx = 0; palB = pals()[0]; palT = 0;
+  }
+  snowCover = weather === 'snow' ? 0.6 : 0; snowCap = 0;
+  parts = []; isNew = false; matched = true; high = false;
+}
+reset();
+addEventListener('resize', resize); resize();
+
+const tolerance = () => Math.max(18 - time * 0.05, 10);
+const spinMul = () => 1 + 0.3 * perf(); // broken umbrella spins harder both ways
+const interval = () => Math.max(5.5 - time * 0.03, 2.6) + rnd(0, 1.2);
+const guideAlpha = () => clamp(1 - (time - 25) / 25, 0, 1);
+function pickPhi(big) {
+  const range = Math.min(22 + time * 0.7, 58);
+  let v = 0;
+  for (let i = 0; i < 25; i++) { v = Math.round(rnd(-range, range)); if (Math.abs(v - phi) >= (big ? 30 : 14)) break; }
+  return v;
+}
+function say(text, t = 2) { banner = { text, t, max: t }; }
+
+// ---------- input ----------
+function tap() {
+  if (state === 'title') { reset(true); start(); return; }
+  if (state === 'play') { kick(); return; }
+  if (state === 'dead' && st > 1.1) { reset(false); start(); }
+}
+function start() {
+  state = 'play'; st = 0; kick();
+  say(WEATHER[weather].start, 2);
+}
+function kick() {
+  P.vy = -JUMP;
+  sfx('tap');
+  P.av = Math.min(P.av * 0.3, 0) - KICK_ROT * spinMul();
+  crew.forEach((c, i) => c.av += 70 + i * 25);
+  for (let i = 0; i < 5; i++) parts.push({ x: px + rnd(-14, 14), y: P.y + 40, vx: rnd(-60, 60) - speed * 0.4, vy: rnd(40, 140), life: 0.45, max: 0.45, r: rnd(5, 10), t: 'puff' });
+}
+function toggleMute() { muted = !muted; try { localStorage.setItem('umbrella_muted', muted ? '1' : '0'); } catch (e) {} }
+cv.addEventListener('pointerdown', e => {
+  e.preventDefault(); audio();
+  const x = e.clientX * DPR / S, y = e.clientY * DPR / S;
+  const [mx, my] = mutePos();
+  if (Math.hypot(x - mx, y - my) < 22) { toggleMute(); return; }
+  tap();
+});
+addEventListener('keydown', e => { if (e.code === 'KeyM') toggleMute(); });
+addEventListener('keydown', e => {
+  if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'Enter') { e.preventDefault(); audio(); if (!e.repeat) tap(); }
+});
+cv.addEventListener('contextmenu', e => e.preventDefault());
+
+// world-space collision points: umbrella only (the animals never collide)
+function hookPos() { const [hx, hy] = rot(-10, 64, P.ang); return [px + hx, P.y + hy]; }
+function bodyPoints() {
+  return [[-62, 0], [62, 0], [0, -50], [-34, -40], [34, -40], [0, 30], [-10, 64]].map(([x, y]) => { const [a, b] = rot(x, y * (y < 40 ? P.flip : 1), P.ang); return [px + a, P.y + b]; });
+}
+// top grip point of each animal in the chain; links drag along the ground instead of sinking into it
+function floorAt(x) {
+  let f = H - GROUND;
+  for (const r of roofs) if (x > r.x - 4 && x < r.x + r.w + 4) f = Math.min(f, H - GROUND - r.h - 8);
+  return f;
+}
+function crewPos() {
+  let [x, y] = hookPos();
+  const out = [];
+  for (const c of crew) {
+    let a = c.a;
+    const floor = floorAt(x) - 6;
+    if (y + LINK > floor) { const k = clamp((floor - y) / LINK, -1, 1); const need = Math.acos(k) / D2R; if (Math.abs(a) < need) a = need; }
+    out.push({ x, y, a });
+    const [dx, dy] = rot(0, LINK, a);
+    x += dx; y += dy;
+  }
+  return out;
+}
+
+const HIT_MSG = { flip: '우산이 홀랑! ', ground: '쿵! ', roof: '옥상에 쾅! ', lightning: '찌릿! ' };
+function hit(why) {
+  if (state !== 'play' || inv > 0) return;
+  const ps = crewPos();
+  const c = crew.pop(), top = ps[ps.length - 1];
+  if (c) { leavers.push({ h: c.h, x: top.x, y: top.y, vx: rnd(-140, -40), vy: -260, r: top.a, t: 0, down: false }); lost.push(c.h); lastFallen = c.h; sfx('cry', c.h.id); }
+  dmg++; sfx('hit');
+  if (combo > 1) popup('콤보 끊김', px + 60, P.y - 80, '#2D2A32', 18);
+  combo = 0; comboMult = 1; focus = 0;
+  for (let i = 0; i < 8; i++) parts.push({ x: px + rnd(-30, 30), y: P.y - 20, vx: rnd(-200, 200), vy: rnd(-220, 40), life: 0.6, max: 0.6, r: rnd(3, 5), t: 'bit' });
+  if (crew.length === 0) { die(why); return; }
+  inv = 1.8; meter = 0.45; shake = 0.6; slowmo = 0.5;
+  say(crew.length === 1 ? `${HIT_MSG[why]}마지막 한 마리!` : `${HIT_MSG[why]}${c.h.name}(이)가 떨어졌어요`, 1.8);
+  if (why === 'ground') { P.y = Math.min(P.y, H - GROUND - 100); P.vy = -JUMP * 1.15; }
+  if (why === 'roof' || why === 'lightning') P.vy = why === 'roof' ? -JUMP * 1.15 : 120;
+  if (why === 'flip') { P.flip = -1; P.ang = -phi; P.av = 0; }
+}
+
+function die(why) {
+  if (state !== 'play') return;
+  state = 'dead'; st = 0; reason = why; shake = 1; dmg = Math.max(dmg, 3); slowmo = 0; sfx('die'); pickQuote(why);
+  P.spin = why === 'ground' ? 0 : 260 * (P.ang >= -phi ? 1 : -1);
+  if (why !== 'ground') P.vy = Math.min(P.vy, -120);
+  const sc = Math.floor(score);
+  if (sc > best) { best = sc; isNew = true; try { localStorage.setItem('umbrella_best_v3', best); } catch (e) {} }
+  for (let i = 0; i < 14; i++) parts.push({ x: px, y: P.y - 20, vx: rnd(-220, 220), vy: rnd(-260, 60), life: 0.7, max: 0.7, r: rnd(3, 6), t: 'bit' });
+}
+
+// ---------- update ----------
+function update(dt) {
+  st += dt; gt += dt; palT += dt / 1.2;
+  inv = Math.max(0, inv - dt);
+  shake = Math.max(0, shake - dt * 2.5); flash = Math.max(0, flash - dt * 4);
+  if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
+  px = W * 0.3;
+  move = 0;
+
+  if (state === 'title') {
+    scroll += 110 * dt;
+    P.y = H * 0.32 + Math.sin(gt * 2) * 12;
+    P.ang = Math.sin(gt * 1.3) * 8;
+  } else if (state === 'play') {
+    time += dt;
+    speed = 220 + Math.min(time * 3.2, 180);
+    // tilting forward = faster, tilting back = slower
+    const tf = clamp(P.ang / 60, -1, 1) * 0.35;
+    move = speed * (1 + tf) * dt;
+    high = P.y < HIGH_Y;
+    dist += move; scroll += move;
+    score += move / 40 * (high ? 1.5 : 1) * comboMult;
+
+    P.vy = Math.min(P.vy + G * dt, MAX_FALL); P.y += P.vy * dt; // umbrella drag caps fall speed
+    if (P.y < 70) { P.y = 70; if (P.vy < 0) P.vy = 0; }
+    P.av = Math.min(P.av + DRIFT * spinMul() * dt, MAX_FWD * spinMul()); P.ang += P.av * dt;
+    P.flip += (1 - P.flip) * Math.min(1, dt * 5);
+    if (P.ang > 80) { P.ang = 80; P.av = Math.min(P.av, 0); }
+    if (P.ang < -80) { P.ang = -80; P.av = Math.max(P.av, 0); }
+
+    // rain angle schedule (normal change or sudden gust)
+    nextChange -= dt;
+    if (pendingPhi === null && nextChange < warnLen) pendingPhi = pickPhi(pendingGust);
+    if (nextChange <= 0) {
+      phiFrom = phi; phiTo = pendingPhi; phiT = 0; phiDur = pendingGust ? 0.15 : 0.7;
+      if (pendingGust) { shake = Math.max(shake, 0.35); }
+      pendingPhi = null; nextChange = interval();
+      pendingGust = time > 12 && Math.random() < 0.25; warnLen = pendingGust ? 0.65 : 1.3;
+      palA = bg(); palIdx = (palIdx + 1 + Math.floor(rnd(0, pals().length - 1))) % pals().length; palB = pals()[palIdx]; palT = 0;
+    }
+    if (phiT < 1) { phiT = Math.min(1, phiT + dt / phiDur); phi = phiFrom + (phiTo - phiFrom) * ease(phiT); }
+
+    const tol = tolerance(), diff = Math.abs(P.ang + phi);
+    matched = diff <= tol;
+    if (time > 1.5 && inv <= 0) {
+      if (!matched) meter += dt / 2.2 * (1 + Math.min((diff - tol) / 40, 1) * 0.6);
+      else meter -= dt / 1.0;
+    }
+    meter = clamp(meter, 0, 1);
+    if (meter >= 1) hit('flip');
+    // PERFECT: stay inside the allowed range long enough to fill the gold ring
+    const HOLD = 3; // seconds inside the allowed range without slipping out
+    if (!matched) {
+      if (combo > 1) popup('콤보 끊김', px + 60, P.y - 70, '#2D2A32', 18);
+      combo = 0; comboMult = 1; focus = 0;
+    } else if (inv <= 0) {
+      focus += dt / HOLD;
+      if (focus >= 1) {
+        focus = 0; combo++; comboMult = Math.min(1 + combo * 0.5, 4);
+        popup(combo > 1 ? `PERFECT ×${comboMult}` : 'PERFECT!', px + 70, P.y - 70, '#FFE066', 28 + Math.min(combo, 6) * 2);
+        sfx('perfect', combo); flash = Math.max(flash, 0.25);
+        for (let i = 0; i < 14; i++) { const a = rnd(0, 7); parts.push({ x: px, y: P.y - 30, vx: Math.cos(a) * rnd(120, 260), vy: Math.sin(a) * rnd(120, 260), life: 0.5, max: 0.5, r: rnd(2.5, 4.5), t: 'star' }); }
+      }
+    }
+
+    // spawn rooftops (low zone) and storm clouds (high zone)
+    nextRoof -= move; nextStorm -= move;
+    if (time > 5 && nextRoof <= 0) {
+      if (!storms.some(s => s.x > W - 260)) {
+        const h = rnd(120, Math.min(150 + time * 3, 290));
+        const rescue = lost.length && Math.random() < 0.8 ? lost.shift() : null;
+        roofs.push({ x: W + 40, w: rnd(rescue ? 110 : 90, 150), h, kind: Math.floor(rnd(0, 3)), seed: Math.random() * 99, rescue });
+        nextRoof = rnd(650, 1250);
+      } else nextRoof = 200;
+    }
+    if (time > 12 && nextStorm <= 0) {
+      if (!roofs.some(r => r.x + r.w > W - 260)) {
+        storms.push({ x: W + 40, w: 170, t: 0, period: rnd(1.5, 2.1), seed: Math.random() * 99 });
+        nextStorm = rnd(1100, 1900);
+      } else nextStorm = 200;
+    }
+    for (const r of roofs) r.x -= move;
+    for (const s of storms) { s.x -= move; s.t += dt; }
+    for (const r of roofs) if (r.x + r.w <= -60 && r.rescue) lost.push(r.rescue);
+    roofs = roofs.filter(r => r.x + r.w > -60);
+    storms = storms.filter(s => s.x + s.w > -60);
+
+    // rescue: brush the dangling chain past a waiting friend
+    const cps = crewPos();
+    const chain = [];
+    cps.forEach(c => { const [dx, dy] = rot(0, LINK, c.a); chain.push([c.x, c.y], [c.x + dx / 2, c.y + dy / 2], [c.x + dx, c.y + dy]); });
+    for (const r of roofs) {
+      if (!r.rescue || crew.length >= CREW_N) continue;
+      const ax = r.x + r.w / 2, ay = H - GROUND - r.h - 24;
+      if (chain.some(([x, y]) => Math.hypot(x - ax, y - ay) < 46)) {
+        crew.push({ h: r.rescue, a: 20, av: 0 });
+        popup(`구출! +100`, ax, ay - 40, '#FFFFFF', 26); score += 100;
+        say(`${r.rescue.name}(이)가 다시 매달렸어요!`, 1.6);
+        sfx('rescue'); sfx('cry', r.rescue.id);
+        for (let i = 0; i < 10; i++) parts.push({ x: ax, y: ay, vx: rnd(-160, 160), vy: rnd(-220, -40), life: 0.6, max: 0.6, r: rnd(3, 5), t: 'star' });
+        r.rescue = null;
+      }
+    }
+
+    // last friend: heartbeat
+    if (crew.length === 1) { beatT -= dt; if (beatT <= 0) { sfx('beat'); beatT = 0.8; } } else beatT = 0;
+
+    // collisions
+    const pts = bodyPoints();
+    if (pts.some(([x, y]) => y > H - GROUND)) {
+      if (inv > 0) { P.vy = -JUMP; P.y -= 4; } else hit('ground');
+    }
+    for (const r of roofs) {
+      const top = H - GROUND - r.h;
+      if (pts.some(([x, y]) => x > r.x && x < r.x + r.w && y > top)) hit('roof');
+    }
+    for (const s of storms) {
+      const cyc = Math.floor(s.t / s.period);
+      if (strikeOn(s) && s.lastCyc !== cyc) { s.lastCyc = cyc; sfx('thunder'); flash = Math.max(flash, 0.35); }
+      if (strikeOn(s)) {
+        const bx = s.x + s.w / 2;
+        if (pts.some(([x, y]) => Math.abs(x - bx) < 34 && y < HIGH_Y + 14)) hit('lightning');
+      }
+    }
+  } else if (state === 'dead') {
+    speed *= Math.exp(-2.2 * dt); move = speed * dt; scroll += move;
+    for (const r of roofs) r.x -= move;
+    for (const s of storms) { s.x -= move; s.t += dt; }
+    P.flip += (-1 - P.flip) * Math.min(1, dt * 9);
+    if (!P.landed) {
+      P.vy += G * dt; P.y += P.vy * dt; P.ang += P.spin * dt;
+      if (P.y > H - GROUND - 26) { P.y = H - GROUND - 26; P.vy = 0; P.landed = true; P.spin = 0; P.rest = Math.round((P.ang - 100) / 360) * 360 + 100; shake = Math.max(shake, 0.5);
+        for (let i = 0; i < 10; i++) parts.push({ x: px + rnd(-40, 40), y: H - GROUND, vx: rnd(-160, 160), vy: rnd(-260, -80), life: 0.5, max: 0.5, r: rnd(3, 5), t: 'drop' });
+      }
+    } else {
+      P.ang += (P.rest - P.ang) * Math.min(1, dt * 8);
+    }
+  }
+
+  // animal chain: each one swings from the one above
+  crew.forEach((c, i) => {
+    const pa = i ? crew[i - 1].a : 0;
+    c.av += (-(c.a - pa * 0.5) * 38 - c.av * 3.2) * dt - P.av * 0.015 * (1 + i * 0.5);
+    c.a = clamp(c.a + c.av * dt, -60, 60);
+  });
+  for (const l of leavers) {
+    l.t += dt; l.x += (l.down ? 0 : l.vx * dt) - move;
+    if (!l.down) { l.vy = Math.min(l.vy + G * 0.6 * dt, 360); l.y += l.vy * dt; l.r += 200 * dt; if (l.y > H - GROUND - 12) { l.down = true; l.y = H - GROUND - 12; } }
+    else l.r += ((90 + Math.round((l.r - 90) / 360) * 360) - l.r) * Math.min(1, dt * 10);
+  }
+  leavers = leavers.filter(l => l.x > -80 && l.t < 6);
+  const snowing = weather === 'snow';
+  snowCover = clamp(snowCover + (snowing ? dt / 8 : -dt / 4), 0, 1);
+  snowCap = clamp(snowCap + (snowing && state === 'play' && matched ? dt / 5 : -dt / 2.5), 0, 1);
+
+  // rain
+  const sx = Math.sin(phi * D2R), sy = Math.cos(phi * D2R);
+  const canBlock = state !== 'dead';
+  const snow = weather === 'snow', met = weather === 'meteor', vmul = snow ? 0.45 : met ? 0.55 : 1;
+  for (const d of drops) {
+    d.x += sx * RAIN_V * d.v * vmul * dt + (snow ? Math.sin(gt * 2 + d.l) * 10 * dt : 0); d.y += sy * RAIN_V * d.v * vmul * dt;
+    if (d.y > H - GROUND + 6) {
+      if (met && d.f) { for (let i = 0; i < 4; i++) parts.push({ x: d.x, y: H - GROUND, vx: rnd(-120, 120), vy: rnd(-200, -60), life: 0.4, max: 0.4, r: rnd(2, 4), t: 'ember' }); }
+      else if (!snow && !met && Math.random() < 0.25) parts.push({ x: d.x, y: H - GROUND + 2, vx: 0, vy: 0, life: 0.3, max: 0.3, r: 1, t: 'ring' });
+      Object.assign(d, newDrop(false));
+    }
+    if (d.x > W + 260) d.x -= W + 520;
+    if (d.x < -260) d.x += W + 520;
+    if (canBlock) {
+      const [lx, ly] = rot(d.x - px, d.y - P.y, -P.ang);
+      if (ly < 2 && ly > -60 && lx * lx + ly * ly < 64 * 64 && !(perf() > 0 && (d.leak ??= Math.random()) < 0.1 * perf())) {
+        const dx = d.x - px, dy = d.y - P.y, len = Math.hypot(dx, dy) || 1;
+        if (snow) parts.push({ x: d.x, y: d.y, vx: dx / len * 60 + rnd(-20, 20), vy: -40, life: 0.4, max: 0.4, r: rnd(2, 3.5), t: 'drop' });
+        else if (met) { const n = d.f ? 5 : 1; for (let i = 0; i < n; i++) parts.push({ x: d.x, y: d.y, vx: dx / len * rnd(80, 200) + rnd(-50, 50), vy: dy / len * rnd(80, 200) - 60, life: 0.35, max: 0.35, r: rnd(2, d.f ? 4.5 : 2.5), t: 'ember' }); }
+        else if (fishRain() && d.f) parts.push({ x: d.x, y: d.y, vx: dx / len * 160, vy: -200, life: 0.6, max: 0.6, r: 1, t: 'fish', fc: d.fc, sp: rnd(-600, 600) });
+        else parts.push({ x: d.x, y: d.y, vx: dx / len * rnd(90, 180) + rnd(-30, 30), vy: dy / len * rnd(90, 180) - 40, life: 0.32, max: 0.32, r: rnd(2, 3.5), t: 'drop' });
+        Object.assign(d, newDrop(false));
+      }
+    }
+  }
+
+  for (const p of parts) {
+    p.life -= dt; p.x += p.vx * dt - (p.t === 'ring' ? move : 0); p.y += p.vy * dt;
+    if (p.t === 'drop' || p.t === 'bit' || p.t === 'fish' || p.t === 'ember') p.vy += 900 * dt;
+    if (p.t === 'star') { p.vx *= 0.93; p.vy *= 0.93; }
+    if (p.t === 'puff') { p.vx *= 0.96; p.vy *= 0.94; }
+  }
+  parts = parts.filter(p => p.life > 0);
+  for (const q of popups) { q.t -= dt * 0.9; q.y -= 40 * dt; q.x -= move * 0.3; }
+  popups = popups.filter(q => q.t > 0);
+}
+
+function strikeOn(s) { if (s.t < s.period) return false; const c = s.t % s.period; return c < 0.3; }
+function strikeWarn(s) { const c = s.t % s.period; return c > s.period - 0.6; }
+
+// ---------- drawing ----------
+function layer(off, seed, minW, maxW, minH, maxH, c, win) {
+  const step = maxW + 8, start = Math.floor(off / step) - 1;
+  for (let i = start; i < start + W / step + 3; i++) {
+    const w = minW + hash(i + seed) * (maxW - minW);
+    const h = minH + hash(i * 1.7 + seed + 9) * (maxH - minH);
+    const x = i * step - off + (step - w) * hash(i + seed + 3);
+    const top = H - GROUND - h;
+    ctx.fillStyle = c;
+    ctx.fillRect(x, top, w, h + 2);
+    const k = hash(i * 3.1 + seed);
+    if (k > 0.75) { ctx.beginPath(); ctx.moveTo(x - 4, top); ctx.lineTo(x + w / 2, top - w * 0.35); ctx.lineTo(x + w + 4, top); ctx.fill(); }
+    else if (k > 0.55) ctx.fillRect(x + w * 0.6, top - 26, 4, 26);
+    else if (k > 0.4) ctx.fillRect(x + w * 0.15, top - 14, w * 0.3, 14);
+    if (win) {
+      ctx.fillStyle = win;
+      const cols = Math.max(2, Math.floor((w - 14) / 18));
+      const gap = (w - 14) / cols;
+      for (let r = 0; top + 18 + r * 30 < H - GROUND - 22; r++)
+        for (let q = 0; q < cols; q++)
+          if (hash(i * 13 + r * 7 + q * 3 + seed) > 0.35) ctx.fillRect(x + 7 + q * gap + gap * 0.2, top + 18 + r * 30, gap * 0.6, 12);
+    }
+  }
+}
+
+function cloud(x, y, s, c) {
+  ctx.fillStyle = c; ctx.beginPath();
+  ctx.arc(x, y, 30 * s, 0, 7); ctx.arc(x + 34 * s, y - 14 * s, 36 * s, 0, 7); ctx.arc(x + 72 * s, y, 28 * s, 0, 7);
+  ctx.fill(); ctx.fillRect(x, y - 2, 72 * s, 30 * s);
+}
+
+function drawRoof(r, B) {
+  const top = H - GROUND - r.h;
+  ctx.fillStyle = col(B, 0.47); ctx.fillRect(r.x, top, r.w, r.h + 2);
+  ctx.fillStyle = col(B, 0.4); ctx.fillRect(r.x - 6, top - 8, r.w + 12, 10);
+  ctx.fillStyle = col(B, 0.62);
+  for (let y = top + 24; y < H - GROUND - 26; y += 34)
+    for (let x = r.x + 14; x < r.x + r.w - 22; x += 28) ctx.fillRect(x, y, 14, 16);
+  ctx.fillStyle = col(B, 0.4);
+  if (r.kind === 0) { // water tank
+    ctx.fillRect(r.x + r.w * 0.55 - 2, top - 40, 4, 32); ctx.fillRect(r.x + r.w * 0.55 + 22, top - 40, 4, 32);
+    rr(r.x + r.w * 0.55 - 6, top - 70, 36, 34, 8); ctx.fill();
+  } else if (r.kind === 1) { // antenna
+    ctx.fillRect(r.x + r.w * 0.3, top - 60, 4, 52); ctx.fillRect(r.x + r.w * 0.3 - 14, top - 48, 32, 4); ctx.fillRect(r.x + r.w * 0.3 - 9, top - 36, 22, 4);
+  } else { // laundry line
+    ctx.fillRect(r.x + 10, top - 38, 4, 30); ctx.fillRect(r.x + r.w - 14, top - 38, 4, 30);
+    ctx.strokeStyle = col(B, 0.4); ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(r.x + 12, top - 36); ctx.quadraticCurveTo(r.x + r.w / 2, top - 26, r.x + r.w - 12, top - 36); ctx.stroke();
+    const cs = [RED, CREAM, '#F4C542'];
+    for (let i = 0; i < 3; i++) { ctx.fillStyle = cs[(i + Math.floor(r.seed)) % 3]; const x = r.x + 22 + i * (r.w - 44) / 2.6; ctx.fillRect(x, top - 32 + (i === 1 ? 3 : 0), 16, 18); }
+  }
+}
+
+function drawStorm(s, B) {
+  const warn = strikeWarn(s) && Math.floor(gt * 14) % 2 === 0, on = strikeOn(s);
+  const cx = s.x + s.w / 2;
+  if (on) {
+    ctx.strokeStyle = '#FFE066'; ctx.lineWidth = 7; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(cx, 110);
+    let y = 110, k = 0;
+    while (y < HIGH_Y + 10) { y += 26; k++; ctx.lineTo(cx + (k % 2 ? 1 : -1) * (12 + hash(s.seed + k) * 10), y); }
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2.5; ctx.stroke();
+  } else if (warn) {
+    ctx.strokeStyle = 'rgba(255,224,102,0.55)'; ctx.lineWidth = 3; ctx.setLineDash([6, 8]);
+    ctx.beginPath(); ctx.moveTo(cx, 110); ctx.lineTo(cx, HIGH_Y + 10); ctx.stroke(); ctx.setLineDash([]);
+  }
+  const c = on ? col(B, 1.08) : warn ? col(B, 0.62) : col(B, 0.42);
+  cloud(s.x + 10, 70, 1.25, c);
+  cloud(s.x + 60, 92, 1.05, c);
+}
+
+function bubble(x, y, text) {
+  ctx.font = `800 16px ${FONT}`;
+  const w = Math.max(48, ctx.measureText(text).width + 24);
+  ctx.fillStyle = '#FFFFFF'; rr(x + 14, y - 34, w, 28, 12); ctx.fill();
+  ctx.fillStyle = DARK; ctx.textAlign = 'center'; ctx.fillText(text, x + 14 + w / 2, y - 14);
+}
+
+function drawHanger(id, x, y, a, sc = 1) {
+  if (id === 'cat') return drawCatShape(x, y, a, sc);
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a * D2R); ctx.scale(sc, sc);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const eyes = (ex, ey, gap, r = 2.2, c = DARK) => { ctx.fillStyle = c; ctx.beginPath(); ctx.arc(ex - gap, ey, r, 0, 7); ctx.arc(ex + gap, ey, r, 0, 7); ctx.fill(); };
+  if (id === 'dog') {
+    const c = '#C98B55', d = '#8A5A35';
+    ctx.strokeStyle = c; ctx.lineWidth = 4.5; ctx.beginPath(); ctx.moveTo(-3, 0); ctx.lineTo(-6, 12); ctx.moveTo(3, 0); ctx.lineTo(6, 12); ctx.stroke();
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(0, 19, 11, 0, 7); ctx.fill();
+    ctx.fillStyle = d; ctx.beginPath(); ctx.ellipse(-11, 20, 4.5, 9, 0.3, 0, 7); ctx.ellipse(11, 20, 4.5, 9, -0.3, 0, 7); ctx.fill();
+    ctx.fillStyle = '#F3DCC2'; ctx.beginPath(); ctx.ellipse(0, 24, 6, 4.5, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = DARK; ctx.beginPath(); ctx.arc(0, 22, 2.2, 0, 7); ctx.fill(); eyes(0, 16, 4.5, 2);
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, 38, 10, 12, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = c; ctx.lineWidth = 4.5; ctx.beginPath(); ctx.moveTo(-5, 48); ctx.lineTo(-6, 53); ctx.moveTo(5, 48); ctx.lineTo(6, 53); ctx.stroke();
+    ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(8, 42); ctx.lineTo(17, 34); ctx.stroke();
+  } else if (id === 'duck') {
+    const c = '#F4C542';
+    ctx.fillStyle = '#F08A3C'; ctx.beginPath(); ctx.moveTo(-5, 4); ctx.lineTo(5, 4); ctx.lineTo(0, -2); ctx.closePath(); ctx.fill(); // beak biting the hook
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(0, 13, 9.5, 0, 7); ctx.fill();
+    eyes(0, 12, 4, 1.8);
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, 33, 13, 12, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#E3AE2C'; ctx.beginPath(); ctx.ellipse(-12, 31, 5, 8, 0.6, 0, 7); ctx.ellipse(12, 31, 5, 8, -0.6, 0, 7); ctx.fill();
+    ctx.strokeStyle = '#F08A3C'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-4, 44); ctx.lineTo(-5, 50); ctx.moveTo(4, 44); ctx.lineTo(5, 50); ctx.stroke();
+    ctx.fillStyle = '#F08A3C'; ctx.fillRect(-9, 49, 7, 3); ctx.fillRect(2, 49, 7, 3);
+  } else if (id === 'frog') {
+    const c = '#6BBF59', d = '#4E9A40';
+    ctx.strokeStyle = c; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-3, 0); ctx.lineTo(-9, 12); ctx.moveTo(3, 0); ctx.lineTo(9, 12); ctx.stroke();
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, 19, 13, 9, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(-7, 11, 5, 0, 7); ctx.arc(7, 11, 5, 0, 7); ctx.fill();
+    ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(-7, 11, 3.2, 0, 7); ctx.arc(7, 11, 3.2, 0, 7); ctx.fill(); eyes(0, 11, 7, 1.6);
+    ctx.strokeStyle = d; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 19, 6, 0.2, Math.PI - 0.2); ctx.stroke();
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, 33, 9, 10, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = c; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-5, 40); ctx.lineTo(-9, 48); ctx.lineTo(-6, 54); ctx.moveTo(5, 40); ctx.lineTo(9, 48); ctx.lineTo(6, 54); ctx.stroke();
+  } else if (id === 'penguin') {
+    ctx.strokeStyle = DARK; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(-6, 18); ctx.lineTo(-3, 1); ctx.moveTo(6, 18); ctx.lineTo(3, 1); ctx.stroke(); // flippers up
+    ctx.fillStyle = DARK; ctx.beginPath(); ctx.ellipse(0, 30, 12, 20, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.ellipse(0, 34, 8, 14, 0, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(-4, 18, 2.6, 0, 7); ctx.arc(4, 18, 2.6, 0, 7); ctx.fill(); eyes(0, 18, 4, 1.3);
+    ctx.fillStyle = '#F08A3C'; ctx.beginPath(); ctx.moveTo(-3, 22); ctx.lineTo(3, 22); ctx.lineTo(0, 26); ctx.closePath(); ctx.fill();
+    ctx.fillRect(-9, 48, 7, 4); ctx.fillRect(2, 48, 7, 4);
+  } else if (id === 'sloth') {
+    const c = '#A88B6E';
+    ctx.strokeStyle = c; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(-4, 1); ctx.lineTo(-8, 14); ctx.moveTo(4, 1); ctx.lineTo(8, 14); ctx.stroke();
+    ctx.strokeStyle = DARK; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(-6, -1); ctx.lineTo(-3, 3); ctx.moveTo(6, -1); ctx.lineTo(3, 3); ctx.stroke(); // claws
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(0, 21, 10, 0, 7); ctx.fill();
+    ctx.fillStyle = '#E8D7C1'; ctx.beginPath(); ctx.ellipse(0, 22, 8, 6, 0, 0, 7); ctx.fill();
+    ctx.fillStyle = '#6E5440'; ctx.beginPath(); ctx.ellipse(-4, 21, 3.5, 2.2, -0.4, 0, 7); ctx.ellipse(4, 21, 3.5, 2.2, 0.4, 0, 7); ctx.fill();
+    ctx.fillStyle = DARK; ctx.beginPath(); ctx.arc(0, 25, 1.4, 0, 7); ctx.fill();
+    ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(0, 39, 10, 13, 0, 0, 7); ctx.fill();
+    ctx.strokeStyle = c; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(-5, 49); ctx.lineTo(-7, 54); ctx.moveTo(5, 49); ctx.lineTo(7, 54); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawCatShape(x, y, a, sc) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a * D2R); ctx.scale(sc, sc);
+  ctx.fillStyle = DARK; ctx.strokeStyle = DARK; ctx.lineCap = 'round';
+  ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-3, 0); ctx.lineTo(-5, 12); ctx.moveTo(3, 0); ctx.lineTo(5, 12); ctx.stroke(); // arms
+  ctx.beginPath(); ctx.arc(0, 18, 10, 0, 7); ctx.fill(); // head
+  ctx.beginPath(); ctx.moveTo(-9, 13); ctx.lineTo(-8, 4); ctx.lineTo(-3, 10); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(9, 13); ctx.lineTo(8, 4); ctx.lineTo(3, 10); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(0, 36, 9, 13, 0, 0, 7); ctx.fill(); // body
+  ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-4, 47); ctx.lineTo(-5, 52); ctx.moveTo(4, 47); ctx.lineTo(5, 52); ctx.stroke(); // legs
+  ctx.lineWidth = 3.5; ctx.beginPath(); ctx.moveTo(7, 42); ctx.quadraticCurveTo(22, 44, 18, 28); ctx.stroke(); // tail
+  ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(-4, 18, 2.2, 0, 7); ctx.arc(4, 18, 2.2, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+function drawUmbrella(x, y, ang, flip, wob, dmg = 0) {
+  const R = 64;
+  ctx.save();
+  ctx.translate(x, y); ctx.rotate((ang + wob) * D2R);
+  ctx.strokeStyle = DARK; ctx.lineWidth = 5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, -44 * flip); ctx.lineTo(0, 54); ctx.arc(-10, 54, 10, 0, Math.PI, false); ctx.stroke();
+  ctx.save(); ctx.scale(1, flip);
+  const n = 5;
+  ctx.beginPath(); ctx.moveTo(-R, 0);
+  ctx.bezierCurveTo(-R, -R * 1.05, R, -R * 1.05, R, 0);
+  for (let i = n; i > 0; i--) { const x1 = -R + i * 2 * R / n, x0 = -R + (i - 1) * 2 * R / n; ctx.quadraticCurveTo((x0 + x1) / 2, -13, x0, 0); }
+  ctx.closePath();
+  ctx.save(); ctx.clip();
+  for (let i = 0; i < n; i++) {
+    const a = -R + i * 2 * R / n, b = -R + (i + 1) * 2 * R / n;
+    ctx.fillStyle = i % 2 ? CREAM : RED;
+    ctx.beginPath(); ctx.moveTo(0, 40); ctx.lineTo(a * 3, -80); ctx.lineTo(b * 3, -80); ctx.closePath(); ctx.fill();
+  }
+  ctx.fillStyle = 'rgba(40,20,30,0.13)'; ctx.fillRect(-R, -16, 2 * R, 18);
+  ctx.strokeStyle = 'rgba(255,255,255,0.45)'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.arc(-8, -2, 42, Math.PI * 1.12, Math.PI * 1.38); ctx.stroke();
+  // tears: one more each time a friend falls
+  const holes = [[-30, -22, 9], [22, -30, 8], [-4, -12, 10]];
+  ctx.fillStyle = 'rgba(45,42,50,0.85)';
+  for (let k = 0; k < Math.min(dmg, 3); k++) {
+    const [hx, hy, r] = holes[k];
+    ctx.beginPath();
+    for (let j = 0; j < 7; j++) { const t = j / 7 * Math.PI * 2, rr2 = r * (j % 2 ? 0.55 : 1); ctx.lineTo(hx + Math.cos(t) * rr2, hy + Math.sin(t) * rr2 * 0.8); }
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+  ctx.strokeStyle = DARK; ctx.lineWidth = 3;
+  if (dmg >= 1) { ctx.beginPath(); ctx.moveTo(R - 4, -4); ctx.lineTo(R + 12, 10); ctx.stroke(); } // bent rib
+  if (dmg >= 2) { // drooping flap
+    ctx.fillStyle = RED; ctx.beginPath(); ctx.moveTo(-R, 0); ctx.lineTo(-R + 26, 0); ctx.lineTo(-R + 6, 22); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(-R - 2, 2); ctx.lineTo(-R - 12, 16); ctx.stroke();
+  }
+  ctx.fillStyle = DARK; rr(-3.5, -60, 7, 13, 3); ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+
+function drawFish(x, y, a, c, sc = 1) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(a); ctx.scale(sc, sc);
+  ctx.fillStyle = c ? '#F08A3C' : '#5B8DEF';
+  ctx.beginPath(); ctx.ellipse(0, 0, 5, 10, 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(-6, -16); ctx.lineTo(6, -16); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(0, 5, 1.6, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+function draw() {
+  ctx.setTransform(S, 0, 0, S, 0, 0);
+  const B = bg();
+  const shx = shake > 0 ? rnd(-1, 1) * shake * 10 : 0, shy = shake > 0 ? rnd(-1, 1) * shake * 10 : 0;
+  ctx.fillStyle = col(B); ctx.fillRect(0, 0, W, H);
+  ctx.save(); ctx.translate(shx, shy);
+
+  for (let i = 0; i < 6; i++) {
+    const span = W + 420;
+    const x = ((i * 260 + hash(i) * 120 - scroll * 0.06) % span + span) % span - 210;
+    cloud(x, 70 + hash(i + 4) * 120, 0.8 + hash(i + 8) * 0.7, col(B, 0.9));
+  }
+  layer(scroll * 0.18, 11, 60, 120, 140, 330, col(B, 0.88), null);
+  layer(scroll * 0.45, 57, 70, 130, 90, 230, col(B, 0.74), col(B, 0.86));
+
+  // high bonus zone line
+  if (state === 'play' || state === 'title') {
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2; ctx.setLineDash([10, 12]);
+    ctx.beginPath(); ctx.moveTo(0, HIGH_Y); ctx.lineTo(W, HIGH_Y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = `800 15px ${FONT}`; ctx.textAlign = 'right';
+    ctx.fillText('점수 ×1.5 구역 ↑', W - 18, HIGH_Y - 10);
+  }
+
+  for (const s of storms) drawStorm(s, B);
+
+  ctx.fillStyle = col(B, 0.56); ctx.fillRect(-20, H - GROUND, W + 40, GROUND + 20);
+  ctx.fillStyle = col(B, 0.66); ctx.fillRect(-20, H - GROUND, W + 40, 8);
+  ctx.fillStyle = col(B, 0.72);
+  const off = scroll % 90;
+  for (let x = -off; x < W + 90; x += 90) ctx.fillRect(x, H - GROUND + 34, 44, 6);
+
+  if (snowCover > 0.01) {
+    ctx.fillStyle = `rgba(255,255,255,${0.9 * snowCover})`;
+    ctx.fillRect(-20, H - GROUND - 4 * snowCover, W + 40, 6 + 12 * snowCover);
+  }
+  for (const r of roofs) {
+    drawRoof(r, B);
+    if (r.rescue) {
+      const ax = r.x + r.w / 2, top = H - GROUND - r.h;
+      drawHanger(r.rescue.id, ax, top - 44, Math.sin(gt * 7) * 10, CREW_SC);
+      if (Math.floor(gt * 3) % 2 === 0) bubble(ax - 6, top - 50, '살려줘!');
+    }
+    if (snowCover > 0.01) { ctx.fillStyle = `rgba(255,255,255,${0.95 * snowCover})`; rr(r.x - 8, H - GROUND - r.h - 8 - 8 * snowCover, r.w + 16, 6 + 8 * snowCover, 5); ctx.fill(); }
+  }
+
+  const hgt = clamp((H - GROUND - P.y) / H, 0, 1);
+  ctx.fillStyle = 'rgba(0,0,0,0.12)';
+  ctx.beginPath(); ctx.ellipse(px, H - GROUND + 4, 56 * (1 - hgt * 0.6), 7 * (1 - hgt * 0.5), 0, 0, 7); ctx.fill();
+
+  // aim guide (fades out over time)
+  const ga = guideAlpha();
+  if (state === 'play' && ga > 0) {
+    const tol = tolerance(), t = -phi;
+    ctx.fillStyle = matched ? `rgba(255,255,255,${0.22 * ga})` : `rgba(229,72,77,${0.22 * ga})`;
+    ctx.beginPath(); ctx.moveTo(px, P.y); ctx.arc(px, P.y, 125, (t - tol - 90) * D2R, (t + tol - 90) * D2R); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = matched ? `rgba(255,255,255,${0.9 * ga})` : `rgba(229,72,77,${0.9 * ga})`; ctx.lineWidth = 3; ctx.setLineDash([8, 8]);
+    ctx.beginPath(); ctx.moveTo(px + Math.sin(t * D2R) * 78, P.y - Math.cos(t * D2R) * 78); ctx.lineTo(px + Math.sin(t * D2R) * 135, P.y - Math.cos(t * D2R) * 135); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  // rain (and fish)
+  const sx = Math.sin(phi * D2R), sy = Math.cos(phi * D2R);
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2.6; ctx.lineCap = 'round';
+  if (weather === 'snow') {
+    // faint streaks behind each flake show which way the snow is coming from
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (const d of drops) { const L = d.l * 1.1; ctx.moveTo(d.x, d.y); ctx.lineTo(d.x - sx * L, d.y - sy * L); }
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.95)';
+    ctx.beginPath();
+    for (const d of drops) { const r = d.l / 7; ctx.moveTo(d.x + r, d.y); ctx.arc(d.x, d.y, r, 0, 7); }
+    ctx.fill();
+  } else if (weather === 'meteor') {
+    // small embers
+    ctx.strokeStyle = 'rgba(255,214,140,0.55)'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (const d of drops) { if (d.f) continue; ctx.moveTo(d.x, d.y); ctx.lineTo(d.x - sx * d.l * 0.6, d.y - sy * d.l * 0.6); }
+    ctx.stroke();
+    // meteors with flame tails
+    for (const d of drops) {
+      if (!d.f) continue;
+      const L = d.l * 3.2, r = d.l / 4;
+      const g = ctx.createLinearGradient(d.x, d.y, d.x - sx * L, d.y - sy * L);
+      g.addColorStop(0, 'rgba(255,190,90,0.95)'); g.addColorStop(1, 'rgba(255,120,60,0)');
+      ctx.strokeStyle = g; ctx.lineWidth = r * 2.2;
+      ctx.beginPath(); ctx.moveTo(d.x, d.y); ctx.lineTo(d.x - sx * L, d.y - sy * L); ctx.stroke();
+      ctx.fillStyle = '#7A4A3A'; ctx.beginPath(); ctx.arc(d.x, d.y, r, 0, 7); ctx.fill();
+      ctx.fillStyle = '#FFD27A'; ctx.beginPath(); ctx.arc(d.x + sx * r * 0.3, d.y + sy * r * 0.3, r * 0.45, 0, 7); ctx.fill();
+    }
+    ctx.lineWidth = 2.6;
+  } else {
+    ctx.beginPath();
+    for (const d of drops) { if (fishRain() && d.f) continue; ctx.moveTo(d.x, d.y); ctx.lineTo(d.x - sx * d.l, d.y - sy * d.l); }
+    ctx.stroke();
+  }
+  if (fishRain()) { const fa = Math.atan2(sy, sx) - Math.PI / 2; for (const d of drops) if (d.f) drawFish(d.x, d.y, fa, d.fc); }
+
+  const wob = state === 'play' ? Math.sin(gt * 42) * meter * meter * 6 : 0;
+  for (const l of leavers) drawHanger(l.h.id, l.x, l.y, l.r, CREW_SC);
+  const cps = crewPos();
+  for (let i = cps.length - 1; i >= 0; i--) drawHanger(crew[i].h.id, cps[i].x, cps[i].y, cps[i].a, CREW_SC);
+  if (state === 'play' && focus > 0.01) {
+    const centered = matched;
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 6;
+    ctx.beginPath(); ctx.arc(px, P.y - 10, 92, 0, 7); ctx.stroke();
+    ctx.strokeStyle = centered ? '#FFE066' : 'rgba(255,224,102,0.6)'; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(px, P.y - 10, 92, -Math.PI / 2, -Math.PI / 2 + focus * Math.PI * 2); ctx.stroke();
+  }
+  const blink = inv > 0 && Math.floor(gt * 12) % 2 === 0;
+  if (blink) ctx.globalAlpha = 0.45;
+  drawUmbrella(px, P.y, P.ang, P.flip, wob, dmg);
+  ctx.globalAlpha = 1;
+  if (snowCap > 0.02 && P.flip > 0.5) {
+    ctx.save(); ctx.translate(px, P.y); ctx.rotate((P.ang + wob) * D2R);
+    ctx.fillStyle = '#FFFFFF';
+    const h = 4 + snowCap * 12, w = 34 + snowCap * 22;
+    ctx.beginPath(); ctx.ellipse(0, -46, w, h, 0, Math.PI, 0); ctx.fill();
+    ctx.beginPath(); ctx.arc(-w * 0.45, -47, h * 0.7, 0, 7); ctx.arc(w * 0.4, -47, h * 0.6, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+  for (const l of leavers) if (l.t < 1.4) bubble(l.x, l.y - (l.down ? 20 : 0), l.h.sound);
+
+  for (const p of parts) {
+    const a = clamp(p.life / p.max, 0, 1);
+    if (p.t === 'ring') {
+      ctx.strokeStyle = `rgba(255,255,255,${a * 0.6})`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(p.x, p.y, 4 + (1 - a) * 12, 2 + (1 - a) * 3, 0, 0, 7); ctx.stroke();
+    } else if (p.t === 'bit') {
+      ctx.fillStyle = Math.random() < 0.5 ? `rgba(229,72,77,${a})` : `rgba(255,243,222,${a})`;
+      ctx.fillRect(p.x - p.r, p.y - p.r, p.r * 2, p.r * 2);
+    } else if (p.t === 'star') {
+      ctx.fillStyle = `rgba(255,224,102,${a})`;
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(gt * 6); ctx.fillRect(-p.r, -p.r, p.r * 2, p.r * 2); ctx.restore();
+    } else if (p.t === 'ember') {
+      ctx.fillStyle = `rgba(255,${150 + (a * 80) | 0},70,${a})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, 7); ctx.fill();
+    } else if (p.t === 'fish') {
+      ctx.globalAlpha = a; drawFish(p.x, p.y, (1 - a) * p.sp * D2R, p.fc); ctx.globalAlpha = 1;
+    } else {
+      ctx.fillStyle = `rgba(255,255,255,${a * (p.t === 'puff' ? 0.55 : 0.9)})`;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (p.t === 'puff' ? 1 + (1 - a) : 1), 0, 7); ctx.fill();
+    }
+  }
+  for (const q of popups) {
+    const a = clamp(q.t / 0.4, 0, 1), sc = 1 + Math.max(0, q.t - 0.8) * 2;
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(q.x, q.y); ctx.scale(sc, sc);
+    ctx.font = `900 ${q.size}px ${FONT}`; ctx.textAlign = 'center';
+    ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(45,42,50,0.55)'; ctx.strokeText(q.text, 0, 0);
+    ctx.fillStyle = q.color; ctx.fillText(q.text, 0, 0);
+    ctx.restore();
+  }
+  ctx.restore();
+
+  if (state === 'play' && crew.length === 1) {
+    const pulse = 0.18 + 0.12 * Math.max(0, Math.sin(gt * Math.PI * 2.5));
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.35, W / 2, H / 2, Math.max(W, H) * 0.75);
+    g.addColorStop(0, 'rgba(229,72,77,0)'); g.addColorStop(1, `rgba(229,72,77,${pulse})`);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash * 0.5})`; ctx.fillRect(0, 0, W, H); }
+  if (state === 'play') hud(B);
+  if (state === 'title') titleScreen(B);
+  if (state === 'dead') deadScreen(B);
+}
+
+function dial(cx, cy, B) {
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.beginPath(); ctx.arc(cx, cy, 32, 0, 7); ctx.fill();
+  const arrow = (a, c, dashed) => {
+    const ux = Math.sin(a * D2R), uy = -Math.cos(a * D2R);
+    ctx.strokeStyle = c; ctx.lineWidth = 4; ctx.lineCap = 'round';
+    if (dashed) ctx.setLineDash([4, 5]);
+    ctx.beginPath(); ctx.moveTo(cx - ux * 6, cy - uy * 6); ctx.lineTo(cx + ux * 24, cy + uy * 24); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = c; ctx.beginPath(); ctx.arc(cx + ux * 24, cy + uy * 24, 4.5, 0, 7); ctx.fill();
+  };
+  if (pendingPhi !== null && Math.floor(gt * 6) % 2 === 0) arrow(-pendingPhi, RED, true);
+  arrow(-phi, col(B, 0.5), false);
+  ctx.fillStyle = DARK; ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 7); ctx.fill();
+}
+
+function hud(B) {
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = DARK; ctx.textAlign = 'left';
+  ctx.font = `800 44px ${FONT}`; ctx.fillText(`${Math.floor(score)}`, 26, 62);
+  const sw = ctx.measureText(`${Math.floor(score)}`).width;
+  let bx0 = 34 + sw;
+  if (high) { ctx.fillStyle = '#F4C542'; rr(bx0, 30, 50, 26, 13); ctx.fill(); ctx.fillStyle = DARK; ctx.font = `800 15px ${FONT}`; ctx.fillText('×1.5', bx0 + 8, 49); bx0 += 58; }
+  if (comboMult > 1) { const pul = 1 + Math.max(0, Math.sin(gt * 10)) * 0.06; ctx.save(); ctx.translate(bx0, 30); ctx.scale(pul, pul); ctx.fillStyle = RED; rr(0, 0, 104, 26, 13); ctx.fill(); ctx.fillStyle = '#FFFFFF'; ctx.font = `800 15px ${FONT}`; ctx.fillText(`COMBO ×${comboMult}`, 9, 19); ctx.restore(); }
+  ctx.fillStyle = DARK; ctx.font = `600 16px ${FONT}`; ctx.globalAlpha = 0.7;
+  ctx.fillText(`${Math.floor(dist / 40)}m · ${time.toFixed(1)}초`, 28, 88); ctx.globalAlpha = 1;
+  // remaining friends
+  for (let i = 0; i < CREW_N; i++) {
+    const x = 36 + i * 34, y = 100;
+    ctx.fillStyle = 'rgba(255,255,255,0.6)'; ctx.beginPath(); ctx.arc(x, y + 16, 15, 0, 7); ctx.fill();
+    if (crew[i]) drawHanger(crew[i].h.id, x, y, 0, 0.55);
+    else { ctx.strokeStyle = 'rgba(45,42,50,0.35)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x - 6, y + 10); ctx.lineTo(x + 6, y + 22); ctx.moveTo(x + 6, y + 10); ctx.lineTo(x - 6, y + 22); ctx.stroke(); }
+  }
+
+  const bw = Math.min(260, W * 0.36), bx = W / 2 - bw / 2, by = 28;
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; rr(bx, by, bw, 16, 8); ctx.fill();
+  if (meter > 0.001) { ctx.fillStyle = meter > 0.66 ? RED : meter > 0.33 ? '#F08A3C' : '#F4C542'; rr(bx, by, Math.max(16, bw * meter), 16, 8); ctx.fill(); }
+  ctx.textAlign = 'center'; ctx.fillStyle = DARK; ctx.font = `700 14px ${FONT}`;
+  ctx.fillText(matched ? '각도 OK' : '우산이 뒤집히려 해요!', W / 2, by + 36);
+  if (pendingPhi !== null && Math.floor(gt * (pendingGust ? 9 : 5)) % 2 === 0) {
+    ctx.font = `800 ${pendingGust ? 26 : 20}px ${FONT}`; ctx.fillStyle = pendingGust ? RED : '#FFFFFF';
+    ctx.fillText(pendingGust ? '돌풍!' : `${WEATHER[weather].thing} 방향이 바뀌어요!`, W / 2, by + 66);
+  } else if (banner) {
+    ctx.globalAlpha = clamp(banner.t / 0.3, 0, 1);
+    ctx.font = `800 20px ${FONT}`; ctx.fillStyle = '#FFFFFF'; ctx.fillText(banner.text, W / 2, by + 66);
+    ctx.globalAlpha = 1;
+  }
+  dial(W - 56, 58, B);
+  muteIcon();
+}
+function mutePos() { return state === 'play' ? [W - 56, 122] : [W - 34, 34]; }
+function muteIcon() {
+  const [x, y] = mutePos();
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.beginPath(); ctx.arc(x, y, 16, 0, 7); ctx.fill();
+  ctx.fillStyle = DARK; ctx.beginPath(); ctx.moveTo(x - 8, y - 4); ctx.lineTo(x - 4, y - 4); ctx.lineTo(x + 2, y - 9); ctx.lineTo(x + 2, y + 9); ctx.lineTo(x - 4, y + 4); ctx.lineTo(x - 8, y + 4); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = DARK; ctx.lineWidth = 2;
+  if (muted) { ctx.beginPath(); ctx.moveTo(x + 5, y - 5); ctx.lineTo(x + 11, y + 5); ctx.moveTo(x + 11, y - 5); ctx.lineTo(x + 5, y + 5); ctx.stroke(); }
+  else { ctx.beginPath(); ctx.arc(x + 3, y, 7, -0.8, 0.8); ctx.stroke(); }
+}
+
+function panel(w, h) {
+  const x = W / 2 - w / 2, y = H / 2 - h / 2;
+  ctx.fillStyle = 'rgba(0,0,0,0.12)'; rr(x + 6, y + 8, w, h, 22); ctx.fill();
+  ctx.fillStyle = '#FFF8EC'; rr(x, y, w, h, 22); ctx.fill();
+  return [x, y];
+}
+
+function titleScreen(B) {
+  ctx.textAlign = 'center'; ctx.fillStyle = DARK;
+  ctx.font = `900 ${W < 600 ? 50 : 72}px ${FONT}`; ctx.fillText('우산 꽉 잡아!', W / 2, 140);
+  ctx.font = `700 18px ${FONT}`; ctx.globalAlpha = 0.75; ctx.fillText('HOLD ON TIGHT', W / 2, 172); ctx.globalAlpha = 1;
+  if (best > 0) { ctx.font = `700 16px ${FONT}`; ctx.fillText(`최고 점수 ${best}`, W / 2, 202); }
+  const by = H - GROUND - 130;
+  ctx.fillStyle = DARK; ctx.font = `700 ${W < 600 ? 15 : 18}px ${FONT}`;
+  ctx.fillText(`톡 누르면 둥실 · ${WEATHER[weather].from} 방향으로 우산을 기울이기!`, W / 2, by);
+  ctx.font = `600 15px ${FONT}`; ctx.globalAlpha = 0.7; ctx.fillText(`오늘의 예보: ${WEATHER[weather].forecast}`, W / 2, by + 28); ctx.globalAlpha = 1;
+  muteIcon();
+  if (Math.floor(gt * 2) % 2 === 0) { ctx.font = `800 22px ${FONT}`; ctx.fillStyle = RED; ctx.fillText('탭해서 시작', W / 2, by + 72); }
+}
+
+function deadScreen(B) {
+  if (st < 0.6) return;
+  const k = ease(clamp((st - 0.6) / 0.35, 0, 1));
+  const msg = { flip: '우산이 뒤집혔어요!', ground: '땅에 떨어졌어요!', roof: '옥상에 걸렸어요!', lightning: '번개에 맞았어요!' }[reason];
+  const pw = Math.min(400, W - 40);
+  ctx.font = `700 17px ${FONT}`;
+  const ql = quote ? wrapLines(`“${quote.text}”`, pw - 56) : [];
+  const ph = 300 + ql.length * 24 + 30;
+  ctx.save(); ctx.globalAlpha = k; ctx.translate(0, (1 - k) * 30);
+  const [x, y] = panel(pw, ph);
+  ctx.textAlign = 'center'; ctx.fillStyle = DARK;
+  ctx.font = `800 22px ${FONT}`; ctx.fillText(msg, W / 2, y + 44);
+  ctx.font = `900 60px ${FONT}`; ctx.fillStyle = RED; ctx.fillText(`${Math.floor(score)}`, W / 2, y + 112);
+  ctx.fillStyle = DARK; ctx.font = `600 16px ${FONT}`;
+  ctx.fillText(`거리 ${Math.floor(dist / 40)}m · 생존 ${time.toFixed(1)}초`, W / 2, y + 146);
+  ctx.globalAlpha = k * 0.65; ctx.fillText(`최고 점수 ${best}`, W / 2, y + 170); ctx.globalAlpha = k;
+  if (isNew) { ctx.fillStyle = '#F4C542'; rr(W / 2 - 58, y + 182, 116, 24, 12); ctx.fill(); ctx.fillStyle = DARK; ctx.font = `800 13px ${FONT}`; ctx.fillText('NEW BEST!', W / 2, y + 199); }
+  // quote card
+  const qy = y + 222;
+  ctx.fillStyle = 'rgba(45,42,50,0.06)'; rr(x + 18, qy, pw - 36, ql.length * 24 + 46, 14); ctx.fill();
+  ctx.fillStyle = DARK; ctx.font = `700 17px ${FONT}`;
+  ql.forEach((l, i) => ctx.fillText(l, W / 2, qy + 28 + i * 24));
+  if (quote) { ctx.font = `600 13px ${FONT}`; ctx.globalAlpha = k * 0.6; ctx.fillText(quote.by, W / 2, qy + 28 + ql.length * 24 + 4); ctx.globalAlpha = k; }
+  if (st > 1.1 && Math.floor(gt * 2) % 2 === 0) { ctx.font = `700 17px ${FONT}`; ctx.fillStyle = DARK; ctx.fillText('탭해서 다시 하기', W / 2, y + ph - 20); }
+  ctx.restore();
+}
+
+let last = performance.now();
+function loop(now) {
+  const raw = Math.min((now - last) / 1000, 1 / 30); last = now;
+  slowmo = Math.max(0, slowmo - raw);
+  update(slowmo > 0 ? raw * 0.3 : raw); draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+// test hook
+window.__umb = () => ({ state, ang: P.ang, y: P.y, phi, meter, time, score, reason });
+window.__crew = () => ({ n: crew.length, dmg, inv, weather, leavers: leavers.map(l => [l.h.id, l.down, Math.round(l.r)]) });
+window.__hit = w => hit(w);
+window.__dbg = () => ({ combo, comboMult, lost: lost.map(h => h.id), rescues: roofs.filter(r => r.rescue).length, weather });
+window.__setW = w => { weather = w; palA = bg(); palB = pals()[0]; palT = 0; };
+})();
+</script>
+</body>
+</html>

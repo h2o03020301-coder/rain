@@ -1344,8 +1344,8 @@ function showOver() {
 }
 // ---------- online: ranking, nickname, billboard suggestions (Supabase) ----------
 // Paste your Supabase project URL and public key here (Project Settings → API).
-const SB_URL = '';
-const SB_KEY = '';
+const SB_URL = 'https://ymimvhovjtuxkyzzfmvq.supabase.co';
+const SB_KEY = 'sb_publishable_Klaj_1uvdYudcn2MqMgPzg_RFWsks6I';
 const sbOn = () => !!(SB_URL && SB_KEY);
 async function rpc(fn, args = {}) {
   const h = { apikey: SB_KEY, 'Content-Type': 'application/json' };

@@ -2,12 +2,13 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
+<meta name="author" content="영남대 약대 김준현">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>우산 꽉 잡아!</title>
 <style>
 html,body{margin:0;height:100%;overflow:hidden;background:#7FC8C2;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
 canvas{display:block;width:100vw;height:100vh;cursor:pointer}
-#dev{position:fixed;left:12px;bottom:12px;z-index:30;background:rgba(255,248,236,.94);border-radius:14px;padding:12px 14px;width:260px;font:600 13px "Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;color:#2D2A32;box-shadow:0 6px 0 rgba(0,0,0,.12);display:none;touch-action:auto;user-select:none}
+#dev{position:fixed;left:12px;bottom:12px;z-index:30;max-height:calc(100vh - 24px);overflow:auto;box-sizing:border-box;background:rgba(255,248,236,.94);border-radius:14px;padding:12px 14px;width:260px;font:600 13px "Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;color:#2D2A32;box-shadow:0 6px 0 rgba(0,0,0,.12);display:none;touch-action:auto;user-select:none}
 #dev.on{display:block}
 #dev h4{margin:0 0 8px;font-size:13px;display:flex;justify-content:space-between;align-items:center}
 #dev label{display:block;margin:8px 0 2px}
@@ -59,7 +60,9 @@ canvas{display:block;width:100vw;height:100vh;cursor:pointer}
 .quote span{display:block;font-size:12px;opacity:.6;margin-top:6px}
 .twobtn{display:flex;gap:8px}.twobtn .btn{flex:1}
 .threebtn{display:flex;gap:6px}.threebtn .btn{flex:1;font-size:14px;padding:11px 4px;white-space:nowrap}
-.minirow{flex-wrap:wrap}
+.minirow{flex-wrap:wrap;gap:6px}
+#menu .mini{padding:6px 9px;font-size:12px}
+.credit{margin:10px 0 0;font-size:11px;opacity:.45;font-weight:600;letter-spacing:.3px}
 .err{color:#E5484D;font-size:13px;font-weight:700;margin:8px 0 0;min-height:18px}
 .err.ok{color:#2E8B57}
 .rankbox{background:rgba(45,42,50,.06);border-radius:14px;padding:10px 14px;margin-top:10px;text-align:left}
@@ -91,6 +94,7 @@ canvas{display:block;width:100vw;height:100vh;cursor:pointer}
     <button class="btn main" id="btnStart">게임 시작</button>
     <div class="threebtn"><button class="btn ghost" id="btnTut">튜토리얼</button><button class="btn ghost" id="btnSkin">우산 바꾸기</button><button class="btn ghost" id="btnRank">🏆 랭킹</button></div>
     <div class="minirow"><button class="mini" id="btnNick"></button><button class="mini" id="btnSug">📢 문구 추천</button><button class="mini" id="btnSound"></button><button class="mini" id="btnDev">개발자</button></div>
+    <p class="credit">개발 · 영남대 약대 김준현</p>
   </div>
 </div>
 <div id="skinOv" class="ov center hide">
@@ -165,12 +169,23 @@ canvas{display:block;width:100vw;height:100vh;cursor:pointer}
   <label>앞으로 저절로 도는 가속: <b id="driftV"></b></label>
   <input id="drift" type="range" min="60" max="520" step="5">
   <small>탭 없이 0.6초 지나면 앞으로 약 <b id="driftDeg"></b>°</small>
+  <label>탭 1번에 튀어 오르는 힘: <b id="jumpV"></b></label>
+  <input id="jump" type="range" min="200" max="700" step="5">
+  <small>탭 1번에 약 <b id="jumpPx"></b>px 위로</small>
+  <label>떨어지는 속도: <b id="fallV"></b></label>
+  <input id="fall" type="range" min="120" max="600" step="5">
+  <small>가만히 두면 1초에 최대 <b id="fallPx"></b>px 떨어짐</small>
+  <label>우산 크기: <b id="sizeV"></b></label>
+  <input id="size" type="range" min="0.6" max="1.4" step="0.05">
+  <small>부딪히는 범위도 같이 커지고 작아져요</small>
+  <div class="row"><button id="cfgSave">모두에게 적용</button><button id="cfgUndo">되돌리기</button></div>
+  <small id="cfgSt" style="display:block;margin-top:4px;min-height:14px"></small>
   <div class="row"><label style="margin:0"><input id="god" type="checkbox"> 무적</label><button id="devReset">기본값</button></div>
   <div class="row"><small>현재 각도 <b id="angV">0</b>° · 목표 <b id="tgtV">0</b>°</small></div>
   <hr style="border:0;border-top:1px solid rgba(45,42,50,.15);margin:12px 0 8px">
   <h4 style="margin:0 0 6px">관리 (Supabase)</h4>
   <input id="admPw" type="password" placeholder="관리자 비밀번호" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:8px;border:1px solid rgba(45,42,50,.2);font:inherit">
-  <div class="row"><button id="admBoards">추천 문구 검토</button><button id="admScores">랭킹 관리</button></div>
+  <div class="row"><button id="admBoards">추천 문구 검토</button><button id="admScores">랭킹 관리</button><button id="admStats">플레이 통계</button></div>
   <div id="admList" style="max-height:210px;overflow:auto;margin-top:8px;font-size:12px"></div>
 </div>
 <script>
@@ -183,14 +198,18 @@ const DARK = '#2D2A32', RED = '#E5484D', CREAM = '#FFF3DE';
 let W, H = VH, S, DPR;
 
 // ---------- tuning ----------
-const G = 1100;          // gravity
-const JUMP = 420;        // upward kick per tap
+const DEF_JUMP = 420, DEF_FALL = 300;
+let G = 1100;            // gravity (tied to the fall-speed setting)
+let JUMP = DEF_JUMP;     // upward kick per tap
 const DEF_DRIFT = 315, DEF_KICK = 126;
 let DRIFT = DEF_DRIFT;    // forward tilt acceleration (deg/s^2) — speeds up the longer you wait
 let KICK_ROT = DEF_KICK;  // backward spin per tap (deg/s)
 let devGod = false;
 const MAX_FWD = 315;     // max forward spin (deg/s)
-const MAX_FALL = 300;    // terminal fall speed (umbrella drag)
+let MAX_FALL = DEF_FALL; // terminal fall speed (umbrella drag)
+function setFall(v) { MAX_FALL = v; G = v * 11 / 3; }
+const DEF_SIZE = 1;
+let US = DEF_SIZE;         // umbrella size multiplier (drawing + hit box)
 const RAIN_V = 950;
 
 // ---------- helpers ----------
@@ -433,9 +452,9 @@ addEventListener('keydown', e => {
 cv.addEventListener('contextmenu', e => e.preventDefault());
 
 // world-space collision points: umbrella only (the animals never collide)
-function hookPos() { const [hx, hy] = rot(-10, 64, P.ang); return [px + hx, P.y + hy]; }
+function hookPos() { const [hx, hy] = rot(-10 * US, 64 * US, P.ang); return [px + hx, P.y + hy]; }
 function bodyPoints() {
-  return [[-62, 0], [62, 0], [0, -50], [-34, -40], [34, -40], [0, 30], [-10, 64]].map(([x, y]) => { const [a, b] = rot(x, y * (y < 40 ? P.flip : 1), P.ang); return [px + a, P.y + b]; });
+  return [[-62, 0], [62, 0], [0, -50], [-34, -40], [34, -40], [0, 30], [-10, 64]].map(([x, y]) => { const [a, b] = rot(x * US, y * US * (y < 40 ? P.flip : 1), P.ang); return [px + a, P.y + b]; });
 }
 // top grip point of each animal in the chain; links drag along the ground instead of sinking into it
 function floorAt(x) {
@@ -680,7 +699,7 @@ function update(dt) {
     if (d.x < -260) d.x += W + 520;
     if (canBlock) {
       const [lx, ly] = rot(d.x - px, d.y - P.y, -P.ang);
-      if (ly < 2 && ly > -60 && lx * lx + ly * ly < 64 * 64 && !(perf() > 0 && (d.leak ??= Math.random()) < 0.1 * perf())) {
+      if (ly < 2 && ly > -60 * US && lx * lx + ly * ly < 64 * 64 * US * US && !(perf() > 0 && (d.leak ??= Math.random()) < 0.1 * perf())) {
         const dx = d.x - px, dy = d.y - P.y, len = Math.hypot(dx, dy) || 1;
         if (snow) parts.push({ x: d.x, y: d.y, vx: dx / len * 60 + rnd(-20, 20), vy: -40, life: 0.4, max: 0.4, r: rnd(2, 3.5), t: 'drop' });
         else if (met) { const n = d.f ? 5 : 1; for (let i = 0; i < n; i++) parts.push({ x: d.x, y: d.y, vx: dx / len * rnd(80, 200) + rnd(-50, 50), vy: dy / len * rnd(80, 200) - 60, life: 0.35, max: 0.35, r: rnd(2, d.f ? 4.5 : 2.5), t: 'ember' }); }
@@ -1120,7 +1139,7 @@ function draw() {
   for (const s of storms) drawStorm(s, B);
   const hgt = clamp((H - GROUND - P.y) / H, 0, 1);
   ctx.fillStyle = 'rgba(0,0,0,0.12)';
-  ctx.beginPath(); ctx.ellipse(px, H - GROUND + 4, 56 * (1 - hgt * 0.6), 7 * (1 - hgt * 0.5), 0, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(px, H - GROUND + 4, 56 * US * (1 - hgt * 0.6), 7 * (1 - hgt * 0.5), 0, 0, 7); ctx.fill();
 
   // aim guide (fades out over time)
   const ga = guideAlpha();
@@ -1178,16 +1197,16 @@ function draw() {
   if (state === 'play' && focus > 0.01) {
     const centered = matched;
     ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 6;
-    ctx.beginPath(); ctx.arc(px, P.y - 10, 92, 0, 7); ctx.stroke();
+    ctx.beginPath(); ctx.arc(px, P.y - 10 * US, 92 * US, 0, 7); ctx.stroke();
     ctx.strokeStyle = centered ? '#FFE066' : 'rgba(255,224,102,0.6)'; ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.arc(px, P.y - 10, 92, -Math.PI / 2, -Math.PI / 2 + focus * Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(px, P.y - 10 * US, 92 * US, -Math.PI / 2, -Math.PI / 2 + focus * Math.PI * 2); ctx.stroke();
   }
   const blink = inv > 0 && Math.floor(gt * 12) % 2 === 0;
   if (blink) ctx.globalAlpha = 0.45;
-  drawUmbrella(px, P.y, P.ang, P.flip, wob, dmg);
+  ctx.save(); ctx.translate(px, P.y); ctx.scale(US, US); drawUmbrella(0, 0, P.ang, P.flip, wob, dmg); ctx.restore();
   ctx.globalAlpha = 1;
   if (snowCap > 0.02 && P.flip > 0.5) {
-    ctx.save(); ctx.translate(px, P.y); ctx.rotate((P.ang + wob) * D2R);
+    ctx.save(); ctx.translate(px, P.y); ctx.scale(US, US); ctx.rotate((P.ang + wob) * D2R);
     ctx.fillStyle = '#FFFFFF';
     const h = 4 + snowCap * 12, w = 34 + snowCap * 22;
     ctx.beginPath(); ctx.ellipse(0, -46, w, h, 0, Math.PI, 0); ctx.fill();
@@ -1356,6 +1375,15 @@ async function rpc(fn, args = {}) {
   if (!r.ok) throw new Error((data && data.message) || ('HTTP ' + r.status));
   return data;
 }
+// global tuning shared by every player (set from developer mode)
+let globalTuning = null;
+function applyTuning(c) {
+  if (!c || typeof c !== 'object') return;
+  const pick = (x, a, b, d) => Number.isFinite(+x) && x !== null ? clamp(+x, a, b) : d;
+  KICK_ROT = pick(c.k, 30, 220, KICK_ROT); DRIFT = pick(c.d, 60, 520, DRIFT);
+  JUMP = pick(c.j, 200, 700, JUMP); setFall(pick(c.f, 120, 600, MAX_FALL)); US = pick(c.s, 0.5, 1.6, US);
+}
+if (sbOn()) rpc('get_config').then(c => { if (c && typeof c === 'object' && Object.keys(c).length) { globalTuning = c; applyTuning(c); if (typeof devOn !== 'undefined' && devOn) devSync(); } }).catch(() => {});
 let nickname = '';
 try { nickname = localStorage.getItem('umbrella_nick') || ''; } catch (e) {}
 let sessionId = null, sessionReq = null, usedGod = false, submitReq = null, lastRank = null;
@@ -1624,13 +1652,17 @@ showOnly('menu'); syncMenu(); buildSkins();
 // ---------- developer mode (open with #dev in the URL, or press D) ----------
 const devEl = document.getElementById('dev'), devBtn = document.getElementById('devBtn');
 const $ = id => document.getElementById(id);
-function devLoad() { try { const v = JSON.parse(localStorage.getItem('umbrella_dev') || '{}'); if (v.k) KICK_ROT = v.k; if (v.d) DRIFT = v.d; } catch (e) {} }
-function devSave() { try { localStorage.setItem('umbrella_dev', JSON.stringify({ k: KICK_ROT, d: DRIFT })); } catch (e) {} }
+function devLoad() {}
+function devSave() { $('cfgSt').textContent = '이 기기에서만 바뀐 상태예요 · "모두에게 적용"을 눌러야 저장돼요'; }
 function devSync() {
   $('kick').value = KICK_ROT; $('drift').value = DRIFT;
   $('kickV').textContent = KICK_ROT; $('driftV').textContent = DRIFT;
   $('kickDeg').textContent = Math.round(KICK_ROT * KICK_ROT / (2 * DRIFT));      // deepest backward swing of one tap
   $('driftDeg').textContent = Math.round(DRIFT * 0.36 / 2);                     // forward tilt after 0.6s idle (from rest)
+  $('jump').value = JUMP; $('fall').value = MAX_FALL; $('size').value = US; $('sizeV').textContent = `${Math.round(US * 100)}%`;
+  $('jumpV').textContent = JUMP; $('fallV').textContent = MAX_FALL;
+  $('jumpPx').textContent = Math.round(JUMP * JUMP / (2 * G));
+  $('fallPx').textContent = MAX_FALL;
 }
 let devOn = false;
 function devOpen(on) { devOn = on; devEl.classList.toggle('on', on); devBtn.style.display = !on && devUnlocked ? 'block' : 'none'; if (on) { devLoad(); devSync(); } }
@@ -1659,6 +1691,15 @@ async function admLoad(kind) {
   box.textContent = '불러오는 중…';
   try {
     box.innerHTML = '';
+    if (kind === 'stats') {
+      const r = (await rpc('admin_stats', { p_secret: pw }))[0] || {};
+      const f = v => v == null ? '-' : Math.round(v * 10) / 10;
+      box.innerHTML = '';
+      const rows = [['전체 판 수', r.plays], ['평균 생존', `${f(r.avg_seconds)}초`], ['중간값 생존', `${f(r.median_seconds)}초`], ['상위 25% 생존', `${f(r.p75_seconds)}초`], ['평균 점수', f(r.avg_score)], ['최근 24시간 판 수', r.plays_24h]];
+      for (const [k, v] of rows) { const d = document.createElement('div'); d.className = 'adm'; const a = document.createElement('span'); a.className = 't'; a.textContent = k; const b = document.createElement('b'); b.textContent = v ?? '-'; d.append(a, b); box.append(d); }
+      const note = document.createElement('div'); note.style.cssText = 'margin-top:6px;opacity:.65'; note.textContent = '※ 3초 넘게 플레이하고 점수가 저장된 판만 집계돼요'; box.append(note);
+      return;
+    }
     if (kind === 'boards') {
       const rows = await rpc('admin_boards', { p_secret: pw });
       if (!rows.length) box.textContent = '추천 문구가 없어요';
@@ -1687,6 +1728,7 @@ async function admLoad(kind) {
 }
 el('admBoards').onclick = () => admLoad('boards');
 el('admScores').onclick = () => admLoad('scores');
+el('admStats').onclick = () => admLoad('stats');
 el('admPw').addEventListener('keydown', e => e.stopPropagation());
 el('pwCancel').onclick = () => el('pwOv').classList.add('hide');
 el('pwIn').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') pwSubmit(); if (e.key === 'Escape') el('pwOv').classList.add('hide'); });
@@ -1698,7 +1740,23 @@ $('devClose').onclick = () => devOpen(false);
 $('kick').oninput = e => { KICK_ROT = +e.target.value; devSave(); devSync(); };
 $('drift').oninput = e => { DRIFT = +e.target.value; devSave(); devSync(); };
 $('god').onchange = e => { devGod = e.target.checked; if (devGod) usedGod = true; };
-$('devReset').onclick = () => { KICK_ROT = DEF_KICK; DRIFT = DEF_DRIFT; devSave(); devSync(); };
+$('devReset').onclick = () => { KICK_ROT = DEF_KICK; DRIFT = DEF_DRIFT; JUMP = DEF_JUMP; setFall(DEF_FALL); US = DEF_SIZE; devSave(); devSync(); };
+$('jump').oninput = e => { JUMP = +e.target.value; devSave(); devSync(); };
+$('fall').oninput = e => { setFall(+e.target.value); devSave(); devSync(); };
+$('size').oninput = e => { US = +e.target.value; devSave(); devSync(); };
+$('cfgUndo').onclick = () => {
+  KICK_ROT = DEF_KICK; DRIFT = DEF_DRIFT; JUMP = DEF_JUMP; setFall(DEF_FALL); US = DEF_SIZE;
+  applyTuning(globalTuning); devSync(); $('cfgSt').textContent = globalTuning ? '모두에게 적용된 값으로 되돌렸어요' : '기본값으로 되돌렸어요';
+};
+$('cfgSave').onclick = async () => {
+  const st = $('cfgSt'), pw = el('admPw').value.trim();
+  if (!sbOn()) { st.textContent = 'Supabase 연결이 필요해요'; return; }
+  if (!pw) { st.textContent = '아래 관리 칸에 관리자 비밀번호를 넣어주세요'; return; }
+  const cfg = { k: KICK_ROT, d: DRIFT, j: JUMP, f: MAX_FALL, s: US };
+  st.textContent = '저장 중…';
+  try { await rpc('set_config', { p_secret: pw, p_value: cfg }); globalTuning = cfg; st.textContent = '✅ 모든 플레이어에게 적용됐어요 (새로 접속할 때부터)'; }
+  catch (e) { st.textContent = String(e.message).includes('admin') ? '관리자 비밀번호가 달라요' : '저장하지 못했어요: ' + e.message; }
+};
 for (const el of [devEl, devBtn]) for (const ev of ['pointerdown', 'keydown']) el.addEventListener(ev, e => e.stopPropagation());
 setInterval(() => { if (devOn && P) { $('angV').textContent = Math.round(P.ang); $('tgtV').textContent = Math.round(-phi); } }, 100);
 // test hook

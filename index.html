@@ -179,6 +179,12 @@ canvas{display:block;width:100vw;height:100vh;cursor:pointer}
   <label>각도 허용 범위: <b id="tolV"></b></label>
   <input id="tol" type="range" min="10" max="40" step="1">
   <small>시작 ±<b id="tolA"></b>° → 시간이 지나면 ±<b id="tolB"></b>°까지 좁아짐</small>
+  <label>회오리 세기: <b id="swaV"></b></label>
+  <input id="swa" type="range" min="10" max="60" step="1">
+  <small>빗줄기가 좌우로 ±<b id="swaA"></b>°까지 흔들림 (오래 버티면 +15°)</small>
+  <label>회오리 속도 (한 번 왕복): <b id="swpV"></b></label>
+  <input id="swp" type="range" min="0.8" max="4" step="0.1">
+  <small>짧을수록 빨라요 (오래 버티면 0.8초 더 빨라짐)</small>
   <label>우산 크기: <b id="sizeV"></b></label>
   <input id="size" type="range" min="0.6" max="1.4" step="0.05">
   <small>부딪히는 범위도 같이 커지고 작아져요</small>
@@ -235,10 +241,15 @@ const bg = () => mix(palA, palB, ease(clamp(palT, 0, 1)));
 // ---------- state ----------
 let state = 'title', st = 0, gt = 0, scroll = 0;
 let P, px, dist, score, time, speed, move, meter, phi, phiFrom, phiTo, phiT, phiDur;
-let nextChange, pendingPhi, pendingGust, warnLen, reason, shake = 0, flash = 0, matched = true, high = false;
+let nextChange, pendingPhi, pendingSwirl, warnLen, reason, shake = 0, flash = 0, matched = true, high = false;
 let roofs, storms, nextRoof, nextStorm, weather = 'rain', snowCover = 0, snowCap = 0, leavers = [], banner;
 let crew = [], inv = 0, dmg = 0;
-let gustT = 0, gustDir = 1, gustWarned = false;   // gust visuals only (the umbrella itself is not pushed)
+// swirl (회오리): from 30s, some direction changes become a 2s pendulum sweep you have to follow
+const DEF_SW_AMP = 30, DEF_SW_PER = 2.4, SW_DUR = 2, SW_WARN = 1.2, SW_START = 30, SW_BONUS = 50;
+let SW_AMP = DEF_SW_AMP, SW_PER = DEF_SW_PER;
+let swirlT = 0, swirlAge = 0, swirlCenter = 0, swirlClean = true, swirlFinal = 0;
+const swirlAmp = () => SW_AMP + Math.min(Math.max(time - SW_START, 0) / 60, 1) * 15;       // grows to +15° over a minute
+const swirlPer = () => Math.max(SW_PER - Math.min(Math.max(time - SW_START, 0) / 60, 1) * 0.8, 0.8); // and speeds up
 let boards = [], nextBoard = 300;
 const BOARD_MSGS = ['영남대학교', 'YU PHARMACY', '천마의 기상으로!', '우산 꽉 잡아!', '오늘의 강수확률 100%', '멘트 추천부탁드립니다', '우산 빌려드립니다 (반납 필수)', '가까운 약국은 여기서 500m'];
 const PERFECT_BONUS = 50, HOLD = 1.6, SLIP = 0.4, BREAK = 1.0;
@@ -397,10 +408,10 @@ function reset(keepWeather) {
   P = { y: H * 0.42, vy: 0, ang: 0, av: 0, flip: 1, spin: 0, landed: false };
   const pool = HANGERS.slice().sort(() => Math.random() - 0.5);
   crew = pool.slice(0, CREW_N).map((h, i) => ({ h, a: 0, av: 0 }));
-  inv = 0; dmg = 0; gustT = 0; gustWarned = false; quote = null; lastFallen = null; combo = 0; comboMult = 1; focus = 0; outT = 0; lost = []; popups = []; slowmo = 0;
+  inv = 0; dmg = 0; swirlT = 0; quote = null; lastFallen = null; combo = 0; comboMult = 1; focus = 0; outT = 0; lost = []; popups = []; slowmo = 0;
   dist = 0; score = 0; time = 0; speed = 220; move = 0; meter = 0;
   phi = 0; phiFrom = 0; phiTo = 0; phiT = 1; phiDur = 0.7;
-  nextChange = 3.8; pendingPhi = null; pendingGust = false; warnLen = 1.3;
+  nextChange = 3.8; pendingPhi = null; pendingSwirl = false; warnLen = 1.3;
   roofs = []; storms = []; nextRoof = 600; nextStorm = 900; leavers = []; banner = null; boards = []; nextBoard = 300;
   // weather is decided once per run: all rain or all snow
   if (!keepWeather) {
@@ -415,7 +426,7 @@ addEventListener('resize', resize); resize();
 
 const DEF_TOL = 26;
 let TOL = DEF_TOL;   // allowed angle range at the start (±deg); narrows to 60% over time
-const tolerance = () => Math.max(TOL - time * 0.05, TOL * 0.6);
+const tolerance = () => Math.max(TOL - time * 0.05, TOL * 0.6) + (swirlT > 0 ? 6 : 0);
 const spinMul = () => 1 + 0.3 * perf(); // broken umbrella spins harder both ways
 const interval = () => Math.max(5.5 - time * 0.03, 2.6) + rnd(0, 1.2);
 const guideAlpha = () => 1;   // the guide stays visible for the whole run
@@ -494,6 +505,7 @@ function crewPos() {
 const HIT_MSG = { flip: '우산이 홀랑! ', ground: '쿵! ', roof: '옥상에 쾅! ', lightning: '찌릿! ' };
 function hit(why) {
   if (devGod) return;
+  swirlClean = false;
   if (state !== 'play' || inv > 0) return;
   const ps = crewPos();
   const c = crew.pop(), top = ps[ps.length - 1];
@@ -552,24 +564,29 @@ function update(dt) {
     if (P.ang > 80) { P.ang = 80; P.av = Math.min(P.av, 0); }
     if (P.ang < -80) { P.ang = -80; P.av = Math.max(P.av, 0); }
 
-    // rain angle schedule (normal change or sudden gust)
-    nextChange -= dt;
-    if (pendingPhi === null && nextChange < warnLen) { pendingPhi = pickPhi(pendingGust); if (pendingGust) { gustDir = Math.sin(pendingPhi * D2R) >= 0 ? 1 : -1; sfx('wind'); } }
-    if (nextChange <= 0) {
-      phiFrom = phi; phiTo = pendingPhi; phiT = 0; phiDur = pendingGust ? 0.15 : 0.7;
-      if (pendingGust) { shake = Math.max(shake, 0.35); gustT = 1.1; }
-      pendingPhi = null; nextChange = interval();
-      pendingGust = time > 12 && Math.random() < 0.25; warnLen = pendingGust ? 0.65 : 1.3;
-      palA = bg(); palIdx = (palIdx + 1 + Math.floor(rnd(0, pals().length - 1))) % pals().length; palB = pals()[palIdx]; palT = 0;
+    // rain angle schedule (normal change, or a swirl)
+    if (swirlT > 0) {
+      swirlT -= dt; swirlAge += dt;
+      phi = swirlCenter + swirlAmp() * Math.sin(swirlAge / swirlPer() * Math.PI * 2);
+      if (swirlT <= 0) {
+        swirlT = 0;
+        phiFrom = phi; phiTo = swirlFinal; phiT = 0; phiDur = 0.5; nextChange = interval();
+        if (swirlClean) { score += SW_BONUS; popup(`회오리 통과! +${SW_BONUS}`, px + 80, P.y - 90, '#FFFFFF', 28); sfx('perfect', 3); }
+      }
+    } else {
+      nextChange -= dt;
+      if (pendingPhi === null && nextChange < warnLen) { pendingPhi = pickPhi(false); if (pendingSwirl) sfx('wind'); }
+      if (nextChange <= 0) {
+        if (pendingSwirl) {
+          swirlT = SW_DUR; swirlAge = 0; swirlClean = true; swirlFinal = pendingPhi;
+          swirlCenter = clamp(phi * 0.4, -12, 12); phiT = 1; sfx('wind');
+        } else { phiFrom = phi; phiTo = pendingPhi; phiT = 0; phiDur = 0.7; nextChange = interval(); }
+        pendingPhi = null;
+        pendingSwirl = time > SW_START && Math.random() < 0.2; warnLen = pendingSwirl ? SW_WARN : 1.3;
+        palA = bg(); palIdx = (palIdx + 1 + Math.floor(rnd(0, pals().length - 1))) % pals().length; palB = pals()[palIdx]; palT = 0;
+      }
+      if (phiT < 1) { phiT = Math.min(1, phiT + dt / phiDur); phi = phiFrom + (phiTo - phiFrom) * ease(phiT); }
     }
-    gustT = Math.max(0, gustT - dt);
-    // wind streaks: a few during the warning, a burst while the gust hits
-    const gusting = gustT > 0, warning = pendingGust && pendingPhi !== null;
-    if (gusting || warning) {
-      const n = gusting ? 3 : 1;
-      for (let i = 0; i < n; i++) if (Math.random() < (gusting ? 0.9 : 0.35)) parts.push({ x: gustDir > 0 ? rnd(-260, -40) : W + rnd(40, 260), y: rnd(40, H - GROUND - 40), vx: gustDir * rnd(1300, 1900), vy: rnd(-40, 40), life: 0.9, max: 0.9, r: rnd(80, 170), t: 'wind', c: rnd(-18, 18) });
-    }
-    if (phiT < 1) { phiT = Math.min(1, phiT + dt / phiDur); phi = phiFrom + (phiTo - phiFrom) * ease(phiT); }
 
     const tol = tolerance(), diff = Math.abs(P.ang + phi);
     matched = diff <= tol;
@@ -711,7 +728,7 @@ function update(dt) {
   const canBlock = state !== 'dead';
   const snow = weather === 'snow', met = weather === 'meteor', vmul = snow ? 0.45 : met ? 0.55 : 1;
   for (const d of drops) {
-    d.x += sx * RAIN_V * d.v * vmul * dt + (snow ? Math.sin(gt * 2 + d.l) * 10 * dt : 0) + gustDir * gustT * 520 * dt; d.y += sy * RAIN_V * d.v * vmul * dt;
+    d.x += sx * RAIN_V * d.v * vmul * dt + (snow ? Math.sin(gt * 2 + d.l) * 10 * dt : 0); d.y += sy * RAIN_V * d.v * vmul * dt;
     if (d.y > H - GROUND + 6) {
       if (met && d.f) { for (let i = 0; i < 4; i++) parts.push({ x: d.x, y: H - GROUND, vx: rnd(-120, 120), vy: rnd(-200, -60), life: 0.4, max: 0.4, r: rnd(2, 4), t: 'ember' }); }
       else if (!snow && !met && Math.random() < 0.25) parts.push({ x: d.x, y: H - GROUND + 2, vx: 0, vy: 0, life: 0.3, max: 0.3, r: 1, t: 'ring' });
@@ -1281,29 +1298,25 @@ function draw() {
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   }
   if (flash > 0) { ctx.fillStyle = `rgba(255,255,255,${flash * 0.5})`; ctx.fillRect(0, 0, W, H); }
-  if (state === 'play' && ((pendingGust && pendingPhi !== null) || gustT > 0.6)) drawGustIcon();
+  if (state === 'play') drawSwirlSplash();
   if (state === 'play') hud(B);
   if (state === 'dead' && st > 0.9 && !overShown) showOver();
 }
 
-// wind badge that slides in from the side the gust comes from
-function drawGustIcon() {
-  const k = pendingPhi !== null ? clamp((warnLen - nextChange) / warnLen, 0, 1) : 1;
-  const from = gustDir > 0 ? -1 : 1;                       // wind blowing right comes from the left edge
-  const x = from < 0 ? -60 + ease(k) * 130 : W + 60 - ease(k) * 130, y = H * 0.42;
-  const pulse = 1 + Math.sin(gt * 18) * 0.06;
-  ctx.save(); ctx.translate(x, y); ctx.scale(pulse, pulse);
-  ctx.fillStyle = RED; ctx.beginPath(); ctx.arc(0, 0, 38, 0, 7); ctx.fill();
-  ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 4.5; ctx.lineCap = 'round';
-  ctx.scale(-from, 1);
-  for (const [yy, len, r] of [[-12, 30, 7], [0, 38, 0], [12, 24, 6]]) {
-    ctx.beginPath(); ctx.moveTo(-20, yy); ctx.lineTo(-20 + len, yy);
-    if (r) ctx.arc(-20 + len, yy + (yy < 0 ? -r : r), r, yy < 0 ? Math.PI / 2 : -Math.PI / 2, yy < 0 ? -Math.PI / 2 : Math.PI / 2, yy < 0);
-    ctx.stroke();
-  }
-  ctx.restore();
-  ctx.font = `900 16px ${FONT}`; ctx.textAlign = 'center'; ctx.fillStyle = RED;
-  ctx.fillText('돌풍!', x, y + 60);
+// big translucent "회오리!" splash during the warning (drawn over the scene, never blocks input)
+function drawSwirlSplash() {
+  const warn = pendingSwirl && pendingPhi !== null;
+  if (!warn) return;
+  const k = clamp((warnLen - nextChange) / warnLen, 0, 1);
+  const a = Math.sin(Math.min(k / 0.85, 1) * Math.PI) * 0.5;
+  if (a <= 0.01) return;
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(W / 2, H * 0.45);
+  ctx.scale(0.85 + k * 0.3, 0.85 + k * 0.3);
+  ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = 10; ctx.lineCap = 'round';
+  for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.arc(0, -10, 110 + i * 34, gt * 6 + i * 2, gt * 6 + i * 2 + 2.2); ctx.stroke(); }
+  ctx.font = `900 ${Math.min(120, W / 5)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#FFFFFF'; ctx.fillText('회오리!', 0, 0);
+  ctx.restore(); ctx.textBaseline = 'alphabetic';
 }
 
 function dial(cx, cy, B) {
@@ -1317,8 +1330,9 @@ function dial(cx, cy, B) {
     ctx.setLineDash([]);
     ctx.fillStyle = c; ctx.beginPath(); ctx.arc(cx + ux * 24, cy + uy * 24, 4.5, 0, 7); ctx.fill();
   };
+  if (pendingSwirl && pendingPhi !== null) { arrow((gt * 540) % 360, RED, false); ctx.fillStyle = DARK; ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 7); ctx.fill(); return; }
   if (pendingPhi !== null && Math.floor(gt * 6) % 2 === 0) arrow(-pendingPhi, RED, true);
-  arrow(-phi, col(B, 0.5), false);
+  arrow(-phi, swirlT > 0 ? RED : col(B, 0.5), false);
   ctx.fillStyle = DARK; ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 7); ctx.fill();
 }
 
@@ -1345,9 +1359,15 @@ function hud(B) {
   if (meter > 0.001) { ctx.fillStyle = meter > 0.66 ? RED : meter > 0.33 ? '#F08A3C' : '#F4C542'; rr(bx, by, Math.max(16, bw * meter), 16, 8); ctx.fill(); }
   ctx.textAlign = 'center'; ctx.fillStyle = DARK; ctx.font = `700 14px ${FONT}`;
   ctx.fillText(matched ? '각도 OK' : '우산이 뒤집히려 해요!', W / 2, by + 36);
-  if (pendingPhi !== null && Math.floor(gt * (pendingGust ? 9 : 5)) % 2 === 0) {
-    ctx.font = `800 ${pendingGust ? 26 : 20}px ${FONT}`; ctx.fillStyle = pendingGust ? RED : '#FFFFFF';
-    ctx.fillText(pendingGust ? '돌풍!' : `${WEATHER[weather].thing} 방향이 바뀌어요!`, W / 2, by + 66);
+  if (swirlT > 0) {
+    const bw3 = Math.min(220, W * 0.3);
+    ctx.font = `900 20px ${FONT}`; ctx.fillStyle = '#FFFFFF'; ctx.fillText(`🌀 회오리 ${swirlT.toFixed(1)}초`, W / 2, by + 66);
+    ctx.fillStyle = 'rgba(255,255,255,0.5)'; rr(W / 2 - bw3 / 2, by + 76, bw3, 8, 4); ctx.fill();
+    ctx.fillStyle = '#FFFFFF'; rr(W / 2 - bw3 / 2, by + 76, Math.max(8, bw3 * swirlT / SW_DUR), 8, 4); ctx.fill();
+    ctx.font = `700 13px ${FONT}`; ctx.fillText('움직이는 부채꼴을 따라가세요!', W / 2, by + 102);
+  } else if (pendingPhi !== null && Math.floor(gt * (pendingSwirl ? 9 : 5)) % 2 === 0) {
+    ctx.font = `800 ${pendingSwirl ? 24 : 20}px ${FONT}`; ctx.fillStyle = pendingSwirl ? RED : '#FFFFFF';
+    ctx.fillText(pendingSwirl ? '🌀 회오리가 와요!' : `${WEATHER[weather].thing} 방향이 바뀌어요!`, W / 2, by + 66);
   } else if (banner) {
     ctx.globalAlpha = clamp(banner.t / 0.3, 0, 1);
     ctx.font = `800 20px ${FONT}`; ctx.fillStyle = '#FFFFFF'; ctx.fillText(banner.text, W / 2, by + 66);
@@ -1430,7 +1450,7 @@ function applyTuning(c) {
   if (!c || typeof c !== 'object') return;
   const pick = (x, a, b, d) => Number.isFinite(+x) && x !== null ? clamp(+x, a, b) : d;
   KICK_ROT = pick(c.k, 30, 220, KICK_ROT); DRIFT = pick(c.d, 60, 520, DRIFT);
-  JUMP = pick(c.j, 200, 700, JUMP); setFall(pick(c.f, 120, 600, MAX_FALL)); US = pick(c.s, 0.5, 1.6, US); TOL = pick(c.t, 10, 40, TOL);
+  JUMP = pick(c.j, 200, 700, JUMP); setFall(pick(c.f, 120, 600, MAX_FALL)); US = pick(c.s, 0.5, 1.6, US); TOL = pick(c.t, 10, 40, TOL); SW_AMP = pick(c.wa, 10, 60, SW_AMP); SW_PER = pick(c.wp, 0.8, 4, SW_PER);
 }
 if (sbOn()) rpc('get_config').then(c => { if (c && typeof c === 'object' && Object.keys(c).length) { globalTuning = c; applyTuning(c); if (typeof devOn !== 'undefined' && devOn) devSync(); } }).catch(() => {});
 let nickname = '';
@@ -1539,7 +1559,8 @@ const TUT = [
   { t: '방향 맞추기', d: () => `오른쪽 위 동그라미의 <b>바늘이 ${WEATHER[weather].name} 오는 방향</b>이에요.<br>우산 끝을 바늘과 같은 쪽으로, <b>우산 위 부채꼴(허용 범위) 안에</b> 맞추세요.<br>어긋나면 게이지가 차고, 다 차면 친구가 한 마리 떨어져요.<br>허용 범위는 <b>시간이 지날수록 조금씩 좁아져요.</b>` },
   { t: 'PERFECT', d: () => '<b>"각도 OK" 범위 안에 머물면</b> 금색 링이 차고, 다 차면 PERFECT!<br>이어갈수록 <b>+50 → +75 → +100 …</b> (최대 +200)<br>잠깐 벗어나는 건 괜찮아요. <b>1초 넘게 벗어나거나 부딪히면</b> 연속이 끊겨요.' },
   { t: '친구 구출', d: () => '부딪히면 맨 아래 친구가 떨어지고 <b>우산이 망가져서 더 휙휙 돌아요.</b><br>떨어진 친구는 앞쪽 옥상에서 "살려줘!" 하고 기다려요.<br><b>매달린 친구들로 스치듯</b> 지나가면 구출!<br>PERFECT 연속 중에 구출하면 <b>점수 × 연속 횟수!</b>' },
-  { t: '번개 구름 피하기', d: () => '<b>위에서는 번개 구름 3종</b>(콘센트·고슴도치·고래), <b>아래에서는 옥상</b>이 나와요.<br>닿으면 감전! <b>그 사이로 빠져나가세요.</b> 점선 위로 높이 날면 점수 ×1.5<br>⚠️ 오래 버틸수록 <b>빨라지고</b>, 방향이 <b>더 자주·크게</b> 바뀌고, <b>돌풍</b>과 장애물이 늘어나요!' },
+  { t: '번개 구름 피하기', d: () => '<b>위에서는 번개 구름 3종</b>(콘센트·고슴도치·고래), <b>아래에서는 옥상</b>이 나와요.<br>닿으면 감전! <b>그 사이로 빠져나가세요.</b> 점선 위로 높이 날면 점수 ×1.5<br>⚠️ 오래 버틸수록 <b>빨라지고</b>, 방향이 <b>더 자주·크게</b> 바뀌고, 장애물이 늘어나요!' },
+  { t: '회오리', d: () => `<b>30초부터</b> 가끔 화면에 <b>"회오리!"</b>가 뜨고 바늘이 빙글빙글 돌아요.<br>그 뒤 <b>2초 동안</b> ${WEATHER[weather].subj} 좌우로 계속 흔들려요.<br><b>움직이는 부채꼴을 따라가세요!</b> 친구를 안 떨어뜨리고 버티면 <b>회오리 통과 +50</b>` },
 ];
 let tutOn = false, tutStep = 0, tutT = 0, tutThenPlay = false, tu = null;
 const tcv = el('tc'), tctx = tcv.getContext('2d');
@@ -1683,6 +1704,34 @@ function drawTut(dt) {
     drawUmbrella(160, uy, 0, 1, 0, 0);
     if (sx0 < 520) { tLabel(['콘센트: 흔들리는 플러그 조심!', '고슴도치: 가시가 커졌다 작아졌다!', '고래: 배 밑으로 번개 뚝!'][kind], 400, 214, '#B07A00', 17); tLabel('옥상', rx + rw / 2, top + 34, '#FFFFFF', 18); }
     tLabel('사이로 쏙!', 290, 336, DARK, 18);
+  } else if (tutStep === 5) {
+    // 0~1.2s warning (spinning needle + splash), 1.2~3.2s sweep, then "통과"
+    const cyc = t % 4.4, warnPhase = cyc < 1.2, sweepT = cyc - 1.2, sweeping = cyc >= 1.2 && cyc < 3.2;
+    const target = sweeping ? 30 * Math.sin(sweepT / 2.0 * Math.PI * 2) : (cyc >= 3.2 ? 10 : 0);
+    tRain(-target);
+    tu.a += (target - tu.a) * Math.min(1, dt * 7);
+    const uy = 140 + Math.sin(t * 2) * 5;
+    // moving wedge
+    const tl = 32;
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.beginPath(); ctx.moveTo(230, uy); ctx.arc(230, uy, 125, (target - tl - 90) * D2R, (target + tl - 90) * D2R); ctx.closePath(); ctx.fill();
+    tChain(230, uy, tu.a, ids, 8);
+    drawUmbrella(230, uy, tu.a, 1, 0, 0);
+    // dial: spinning while warning
+    ctx.fillStyle = '#FFFFFF'; ctx.beginPath(); ctx.arc(480, 70, 36, 0, 7); ctx.fill();
+    const na = warnPhase ? (t * 540) % 360 : target;
+    const ux = Math.sin(na * D2R), uy2 = -Math.cos(na * D2R);
+    ctx.strokeStyle = sweeping || warnPhase ? RED : DARK; ctx.lineWidth = 5; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(480 - ux * 7, 70 - uy2 * 7); ctx.lineTo(480 + ux * 27, 70 + uy2 * 27); ctx.stroke();
+    if (warnPhase) {
+      const a = Math.sin(Math.min(cyc / 1.1, 1) * Math.PI) * 0.6;
+      ctx.save(); ctx.globalAlpha = a; tLabel('회오리!', 280, 190, '#FFFFFF', 76); ctx.restore();
+    } else if (sweeping) {
+      const left = 2 - sweepT;
+      tLabel(`🌀 회오리 ${left.toFixed(1)}초`, 280, 40, DARK, 20);
+      ctx.fillStyle = 'rgba(255,255,255,0.7)'; rr(200, 52, 160, 8, 4); ctx.fill();
+      ctx.fillStyle = RED; rr(200, 52, Math.max(8, 160 * left / 2), 8, 4); ctx.fill();
+    } else tLabel('회오리 통과! +50', 300, 60, '#E0A800', 30);
   }
   ctx = saved;
 }
@@ -1708,6 +1757,8 @@ function devSync() {
   $('kickV').textContent = KICK_ROT; $('driftV').textContent = DRIFT;
   $('kickDeg').textContent = Math.round(KICK_ROT * KICK_ROT / (2 * DRIFT));      // deepest backward swing of one tap
   $('driftDeg').textContent = Math.round(DRIFT * 0.36 / 2);                     // forward tilt after 0.6s idle (from rest)
+  $('swa').value = SW_AMP; $('swaV').textContent = `±${SW_AMP}°`; $('swaA').textContent = SW_AMP;
+  $('swp').value = SW_PER; $('swpV').textContent = `${SW_PER.toFixed(1)}초`;
   $('tol').value = TOL; $('tolV').textContent = `±${TOL}°`; $('tolA').textContent = TOL; $('tolB').textContent = Math.round(TOL * 0.6);
   $('jump').value = JUMP; $('fall').value = MAX_FALL; $('size').value = US; $('sizeV').textContent = `${Math.round(US * 100)}%`;
   $('jumpV').textContent = JUMP; $('fallV').textContent = MAX_FALL;
@@ -1805,20 +1856,22 @@ $('devClose').onclick = () => devOpen(false);
 $('kick').oninput = e => { KICK_ROT = +e.target.value; devSave(); devSync(); };
 $('drift').oninput = e => { DRIFT = +e.target.value; devSave(); devSync(); };
 $('god').onchange = e => { devGod = e.target.checked; if (devGod) usedGod = true; };
-$('devReset').onclick = () => { KICK_ROT = DEF_KICK; DRIFT = DEF_DRIFT; JUMP = DEF_JUMP; setFall(DEF_FALL); US = DEF_SIZE; TOL = DEF_TOL; devSave(); devSync(); };
+$('devReset').onclick = () => { KICK_ROT = DEF_KICK; DRIFT = DEF_DRIFT; JUMP = DEF_JUMP; setFall(DEF_FALL); US = DEF_SIZE; TOL = DEF_TOL; SW_AMP = DEF_SW_AMP; SW_PER = DEF_SW_PER; devSave(); devSync(); };
 $('jump').oninput = e => { JUMP = +e.target.value; devSave(); devSync(); };
 $('fall').oninput = e => { setFall(+e.target.value); devSave(); devSync(); };
 $('size').oninput = e => { US = +e.target.value; devSave(); devSync(); };
 $('tol').oninput = e => { TOL = +e.target.value; devSave(); devSync(); };
+$('swa').oninput = e => { SW_AMP = +e.target.value; devSave(); devSync(); };
+$('swp').oninput = e => { SW_PER = +e.target.value; devSave(); devSync(); };
 $('cfgUndo').onclick = () => {
-  KICK_ROT = DEF_KICK; DRIFT = DEF_DRIFT; JUMP = DEF_JUMP; setFall(DEF_FALL); US = DEF_SIZE; TOL = DEF_TOL;
+  KICK_ROT = DEF_KICK; DRIFT = DEF_DRIFT; JUMP = DEF_JUMP; setFall(DEF_FALL); US = DEF_SIZE; TOL = DEF_TOL; SW_AMP = DEF_SW_AMP; SW_PER = DEF_SW_PER;
   applyTuning(globalTuning); devSync(); $('cfgSt').textContent = globalTuning ? '모두에게 적용된 값으로 되돌렸어요' : '기본값으로 되돌렸어요';
 };
 $('cfgSave').onclick = async () => {
   const st = $('cfgSt'), pw = el('admPw').value.trim();
   if (!sbOn()) { st.textContent = 'Supabase 연결이 필요해요'; return; }
   if (!pw) { st.textContent = '아래 관리 칸에 관리자 비밀번호를 넣어주세요'; return; }
-  const cfg = { k: KICK_ROT, d: DRIFT, j: JUMP, f: MAX_FALL, s: US, t: TOL };
+  const cfg = { k: KICK_ROT, d: DRIFT, j: JUMP, f: MAX_FALL, s: US, t: TOL, wa: SW_AMP, wp: SW_PER };
   st.textContent = '저장 중…';
   try { await rpc('set_config', { p_secret: pw, p_value: cfg }); globalTuning = cfg; st.textContent = '✅ 모든 플레이어에게 적용됐어요 (새로 접속할 때부터)'; }
   catch (e) { st.textContent = String(e.message).includes('admin') ? '관리자 비밀번호가 달라요' : '저장하지 못했어요: ' + e.message; }
@@ -1831,7 +1884,8 @@ window.__crew = () => ({ n: crew.length, dmg, inv, weather, leavers: leavers.map
 window.__hit = w => hit(w);
 window.__dbg = () => ({ combo, comboMult, lost: lost.map(h => h.id), rescues: roofs.filter(r => r.rescue).length, weather });
 window.__crewSet = ids => { crew = ids.map(id => ({ h: HANGERS.find(h => h.id === id), a: 0, av: 0 })); };
-window.__gust = () => { pendingGust = true; warnLen = 0.65; nextChange = 0.64; pendingPhi = null; };
+window.__swirl = () => { pendingSwirl = true; warnLen = SW_WARN; nextChange = SW_WARN - 0.01; pendingPhi = null; };
+window.__sw = () => ({ swirlT, phi, pendingSwirl, swirlClean });
 window.__spawn = type => { const st = { type, x: W * 0.5, seed: 1, t: 2, heard: true, w: type === 'whale' ? 240 : type === 'hedgehog' ? 130 : 200, cy: type === 'whale' ? 130 : 150, bottom: 160 }; storms.push(st); };
 window.__setW = w => { weather = w; palA = bg(); palB = pals()[0]; palT = 0; };
 })();

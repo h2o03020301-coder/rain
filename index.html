@@ -190,6 +190,7 @@ canvas{display:block;width:100vw;height:100vh;cursor:pointer}
   <h4 style="margin:0 0 6px">관리 (Supabase)</h4>
   <input id="admPw" type="password" placeholder="관리자 비밀번호" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:8px;border:1px solid rgba(45,42,50,.2);font:inherit">
   <div class="row"><button id="admBoards">추천 문구 검토</button><button id="admScores">랭킹 관리</button><button id="admStats">플레이 통계</button></div>
+  <div class="row"><button id="admReset" style="background:#E5484D">랭킹 초기화</button></div>
   <div id="admList" style="max-height:210px;overflow:auto;margin-top:8px;font-size:12px"></div>
 </div>
 <script>
@@ -1778,6 +1779,21 @@ async function admLoad(kind) {
 el('admBoards').onclick = () => admLoad('boards');
 el('admScores').onclick = () => admLoad('scores');
 el('admStats').onclick = () => admLoad('stats');
+// reset needs two presses within 4 seconds
+let resetArmed = 0;
+el('admReset').onclick = async () => {
+  const b = el('admReset'), box = el('admList'), pw = el('admPw').value.trim();
+  if (!sbOn()) { box.textContent = 'Supabase 설정 전이에요'; return; }
+  if (!pw) { box.textContent = '관리자 비밀번호를 입력하세요'; return; }
+  if (Date.now() - resetArmed > 4000) {
+    resetArmed = Date.now(); b.textContent = '정말 지울까요? 한 번 더 누르기';
+    setTimeout(() => { if (Date.now() - resetArmed >= 4000) b.textContent = '랭킹 초기화'; }, 4100);
+    return;
+  }
+  resetArmed = 0; b.textContent = '랭킹 초기화'; box.textContent = '초기화 중…';
+  try { const n = await rpc('admin_reset_scores', { p_secret: pw }); box.textContent = `🧹 랭킹을 초기화했어요 (기록 ${n ?? 0}개 삭제)`; }
+  catch (e) { box.textContent = String(e.message).includes('admin') ? '관리자 비밀번호가 달라요' : '초기화하지 못했어요: ' + e.message; }
+};
 el('admPw').addEventListener('keydown', e => e.stopPropagation());
 el('pwCancel').onclick = () => el('pwOv').classList.add('hide');
 el('pwIn').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') pwSubmit(); if (e.key === 'Escape') el('pwOv').classList.add('hide'); });
